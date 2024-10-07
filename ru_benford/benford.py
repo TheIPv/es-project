@@ -1,0 +1,1928 @@
+import warnings
+from pandas import Series, DataFrame
+from numpy import arange, log10, ones, abs, cos, sin, pi, mean
+from .constants import CONFS, DIGS, SEC_ORDER_DIGS, REV_DIGS, TEST_NAMES, \
+    MAD_CONFORM, CRIT_CHI2, CRIT_KS
+from .checks import _check_digs_, _check_confidence_, _check_test_, \
+    _check_num_array_, _check_high_Z_
+from .utils import _set_N_, input_data, prepare, \
+    subtract_sorted, prep_to_roll, mad_to_roll, mse_to_roll, \
+    get_mantissas
+from .expected import _get_expected_digits_ # First, Second, LastTwo
+from .viz import _get_plot_args, plot_digs, plot_sum, plot_ordered_mantissas,\
+    plot_mantissa_arc_test, plot_roll_mse, plot_roll_mad
+from .reports import _inform_, _report_mad_, _report_test_, _deprecate_inform_,\
+    _report_mantissa_
+from .stats import Z_статистика, chi_sq, chi_sq_2, kolmogorov_smirnov,\
+    kolmogorov_smirnov_2, _bhattacharyya_distance_, _bhattacharyya_coefficient,\
+    _kullback_leibler_divergence_, _mantissas_ks_
+
+
+class Base(DataFrame):
+    """Internalizes and prepares the data for Analysis.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.`
+
+    Raises:
+        TypeError: if not receiving `int` or `float` as input.
+    """
+
+    def __init__(self, data, decimals, sign='all', sec_order=False):
+
+        DataFrame.__init__(self, {'seq': data})
+
+        if (self.seq.dtype != 'float') & (self.seq.dtype != 'int'):
+            raise TypeError("The sequence dtype was neither int nor "
+                            "float. Convert it to whether int of float, "
+                            "and try again.")
+
+        if sign == 'all':
+            self.seq = self.seq.loc[self.seq != 0]
+        elif sign == 'pos':
+            self.seq = self.seq.loc[self.seq > 0]
+        else:
+            self.seq = self.seq.loc[self.seq < 0]
+
+        self.dropna(inplace=True)
+
+        ab = self.seq.abs()
+
+        if self.seq.dtype == 'int':
+            self['ZN'] = ab
+        else:
+            if decimals == 'infer':
+                self['ZN'] = ab.astype(str).str\
+                               .replace('.', '', regex=False)\
+                               .str.lstrip('0')\
+                               .str[:5].astype(int)
+            else:
+                self['ZN'] = (ab * (10 ** decimals)).astype(int)
+        # First digits
+        for col in ['F1D', 'F2D', 'F3D']:
+            temp = self.ZN.loc[self.ZN >= 10 ** (REV_DIGS[col] - 1)]
+            self[col] = (temp // 10 ** ((log10(temp).astype(int)) -
+                                        (REV_DIGS[col] - 1)))
+            # fill NANs with -1, which is a non-usable value for digits,
+            # to be discarded later.
+            self[col] = self[col].fillna(-1).astype(int)
+        # Second digit
+        temp_sd = self.loc[self.ZN >= 10]
+        self['SD'] = (temp_sd.ZN // 10**((log10(temp_sd.ZN)).astype(int) -
+                                         1)) % 10
+        self['SD'] = self['SD'].fillna(-1).astype(int)
+        # Last two digits
+        temp_l2d = self.loc[self.ZN >= 1000]
+        self['L2D'] = temp_l2d.ZN % 100
+        self['L2D'] = self['L2D'].fillna(-1).astype(int)
+
+
+class Test(DataFrame):
+    """Transforms the original number sequence into a DataFrame reduced
+    by the ocurrences of the chosen digits, creating other computed
+    columns
+
+    Args:
+        base: The Base object with the data prepared for Analysis
+        digs: Tells which test to perform: 1: first digit; 2: first two digits;
+            3: furst three digits; 22: second digit; -2: last two digits.
+        confidence (int, float): confidence level to draw lower and upper limits when
+            plotting and to limit the top deviations to show.
+        limit_N (int): sets a limit to N as the sample size for the calculation of
+            the Z scores if the sample is too big. Defaults to None.
+
+    Attributes:
+        N: Number of records in the sample to consider in computations
+        ddf: Degrees of Freedom to look up for the critical chi-square value
+        chi_square: Chi-square statistic for the given test
+        KS: Kolmogorov-Smirnov statistic for the given test
+        MAD: Mean Absolute Deviation for the given test
+        confidence: Confidence level to consider when setting some critical values
+        digs (int): numerical representation of the test at hand. 1: F1D; 2: F2D;
+            3: F3D; 22: SD; -2: L2D.
+        sec_order (bool): True if the test is a Second Order one
+    """
+
+    def __init__(self, base, digs, confidence, limit_N=None, sec_order=False):
+        # create a separated Expected distributions object
+        super(Test, self).__init__(_get_expected_digits_(digs))
+        # create column with occurrences of the digits in the base
+        self['Counts'] = base[DIGS[digs]].value_counts()
+        # create column with relative frequencies
+        self['Факт'] = base[DIGS[digs]].value_counts(normalize=True)
+        self.fillna(0, inplace=True)
+        # create column with absolute differences
+        self['Dif'] = self.Факт - self.Теор
+        self['Абс_Разность'] = self.Dif.abs()
+        self.limit_N = _set_N_(len(base), limit_N)
+        self['Z_статистика'] = Z_статистика(self, self.limit_N)
+        self.ddf = len(self) - 1
+        self.chi_square = chi_sq_2(self)
+        self.KS = kolmogorov_smirnov_2(self)
+        self.MAD = self.Абс_Разность.mean()
+        self.MSE = (self.Абс_Разность ** 2).mean()
+        self.bhattacharyya_coefficient = _bhattacharyya_coefficient(
+            self.Факт.values, self.Теор.values)
+        self.bhattacharyya_distance = _bhattacharyya_distance_(
+            self.Факт.values, self.Теор.values)
+        self.kullback_leibler_divergence = _kullback_leibler_divergence_(
+            self.Факт.values, self.Теор.values)
+        self.confidence = confidence
+        self.digs = digs
+        self.sec_order = sec_order
+
+        if sec_order:
+            self.name = TEST_NAMES[SEC_ORDER_DIGS[digs]]
+        else:
+            self.name = TEST_NAMES[DIGS[digs]]
+
+    def update_confidence(self, new_conf, check=True):
+        """Sets a new confidence level for the Benford object, so as to be used to
+        produce critical values for the tests
+
+        Args:
+            new_conf: new confidence level to draw lower and upper limits when
+                plotting and to limit the top deviations to show, as well as to
+                calculate critical values for the tests' statistics.
+            check: checks the value provided for the confidence. Defaults to True
+        """
+        if check:
+            self.confidence = _check_confidence_(new_conf)
+        else:
+            self.confidence = new_conf
+
+    @property
+    def critical_values(self):
+        """dict: a dictionary with the critical values for the test at hand,
+            according to the current confidence level."""
+        crit_ks = CRIT_KS[self.confidence] / (self.limit_N ** 0.5) if self.confidence\
+            else None
+        return {'Z': CONFS[self.confidence],
+                'KS': crit_ks,
+                'chi2': CRIT_CHI2[self.ddf][self.confidence],
+                'MAD': MAD_CONFORM[self.digs]}
+
+    def show_plot(self, save_plot=None, save_plot_kwargs=None):
+        """Draws the test plot.
+        
+        Args:
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when save_plot is a string with the figure file
+                path/name.
+        """
+        x, figsize, text_x = _get_plot_args(self.digs)
+        plot_digs(self, x=x, y_Exp=self.Теор, y_Found=self.Факт,
+                    N=self.limit_N, figsize=figsize, conf_Z=CONFS[self.confidence],
+                    text_x=text_x, save_plot=save_plot, save_plot_kwargs=save_plot_kwargs
+                    )
+
+    def report(self, high_Z='pos', show_plot=True,
+               save_plot=None, save_plot_kwargs=None):
+        """Handles the report especific to the test, considering its statistics
+        and according to the current confidence level.
+
+        Args:
+            high_Z (int): chooses which Z scores to be used when displaying results,
+                according to the confidence level chosen. Defaluts to 'pos',
+                which will highlight only values higher than the expexted
+                frequencies; 'all' will highlight both extremes (positive and
+                negative); and an integer, which will use the first n entries,
+                positive and negative, regardless of whether Z is higher than
+                the critical value or not.
+            show_plot: calls the show_plot method, to draw the test plot
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+        """
+        high_Z = _check_high_Z_(high_Z)
+        _report_test_(self, high_Z, self.critical_values)
+        if show_plot:
+            self.show_plot(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+
+class Summ(DataFrame):
+    """Gets the base object and outputs a Summation test object
+
+    Args:
+       base: The Base object with the data prepared for Analysis
+       test: The test for which to compute the summation
+    """
+
+    def __init__(self, base, test):
+        super(Summ, self).__init__(base.abs()
+                                   .groupby(test)[['seq']]
+                                   .sum())
+        self['Доля'] = self.seq / self.seq.sum()
+        self.columns.values[0] = 'Sum'
+        self.Теор = 1 / len(self)
+        self['Абс_Разность'] = (self.Доля - self.Теор).abs()
+        self.index = self.index.astype(int)
+        #: Mean Absolute Deviation for the test
+        self.MAD = self.Абс_Разность.mean()
+        self.MSE = (self.Абс_Разность ** 2).mean()
+        #: Confidence level to consider when setting some critical values
+        self.confidence = None
+        # (int): numerical representation of the test at hand
+        self.digs = REV_DIGS[test]
+        # (str): the name of the Summation test.
+        self.name = TEST_NAMES[f'{test}_Summ']
+
+    def show_plot(self, save_plot=None, save_plot_kwargs=None):
+        """Draws the Summation test plot
+        
+        Args:
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when save_plot is a string with the figure file
+                path/name.
+        """
+        figsize=(2 * (self.digs ** 2 + 5), 1.5 * (self.digs ** 2 + 5))
+        plot_sum(self, figsize, self.Теор,
+                 save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    
+    def report(self, high_diff=None, show_plot=True,
+               save_plot=None, save_plot_kwargs=None):
+        """Gives the report on the Summation test.
+
+        Args:
+            high_diff: Number of records to show after ordering by the absolute
+                differences between the found and the expected proportions
+            show_plot: calls the show_plot method, to draw the Summation test plot
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+        """
+        _report_test_(self, high_diff)
+        if show_plot:
+            self.show_plot(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+
+class Mantissas:
+    """Computes and holds the mantissas of the logarithms of the records
+
+    Args:
+        data: sequence to compute mantissas from. numpy 1D array, pandas
+            Series of pandas DataFrame column.
+        confidence: confidence level for computing the critical values to
+            compare with some statistics
+    """
+
+    def __init__(self, data, confidence=95, limit_N=None):
+
+        data = Series(_check_num_array_(data))
+        data = data.dropna().loc[data != 0].abs()
+        self.limit_N = _set_N_(len(data), limit_N)
+        #: (DataFrame): pandas DataFrame with the mantissas
+        self.data = DataFrame({'Mantissa': get_mantissas(data.abs())})
+        self.confidence = confidence
+
+    @property
+    def stats(self):
+        # (dict): Dictionary with the mantissas statistics
+        ks, crit_ks = _mantissas_ks_(self.data.Mantissa.values,
+                                     self.confidence, self.limit_N)
+        return {'Mean': self.data.Mantissa.mean(),
+                'Var': self.data.Mantissa.var(),
+                'Skew': self.data.Mantissa.skew(),
+                'Kurt': self.data.Mantissa.kurt(),
+                'KS': ks,
+                'KS_critical': crit_ks}
+
+
+    def update_confidence(self, new_conf, check=True):
+        """Sets a new confidence level for the Benford object, so as to be used to
+        produce critical values for the tests
+
+        Args:
+            new_conf: new confidence level to draw lower and upper limits when
+                plotting and to limit the top deviations to show, as well as to
+                calculate critical values for the tests' statistics.
+            check: checks the value provided for the confidence. Defaults to True
+        """
+        if check:
+            self.confidence = _check_confidence_(new_conf)
+        else:
+            self.confidence = new_conf
+
+
+    def report(self, show_plot=None, save_plot=None, save_plot_kwargs=None):
+        """Displays the Mantissas test stats.
+
+        Args:
+            show_plot: shows the Ordered Mantissas plot and the Arc Test plot.
+                Defaults to True.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+        """
+        _report_mantissa_(self.stats, confidence=self.confidence)
+
+        if show_plot:
+            self.show_plot(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+            self.arc_test(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+    def show_plot(self, figsize=(12, 6), save_plot=None, save_plot_kwargs=None):
+        """Plots the ordered mantissas and a line with the expected
+        inclination.
+
+        Args:
+            figsize (tuple): figure size dimensions
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when save_plot is a string with the figure file
+                path/name.
+        """
+        plot_ordered_mantissas(self.data.Mantissa, figsize=figsize,
+                               save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+    def arc_test(self, grid=True, figsize=12,
+                 save_plot=None, save_plot_kwargs=None):
+        """Adds two columns to Mantissas's DataFrame equal to their "X" and "Y"
+        coordinates, plots its to a scatter plot and calculates the gravity
+        center of the circle.
+
+        Args:
+            grid: show grid of the plot. Defaluts to True.
+            figsize (int): size of the figure to be displayed. Since it is a square,
+                there is no need to provide a tuple, like is usually the case with
+                matplotlib.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+        """
+        self.data['mant_x'] = cos(2 * pi * self.data.Mantissa)
+        self.data['mant_y'] = sin(2 * pi * self.data.Mantissa)
+        self.gravity_center = (self.data.mant_x.mean(), self.data.mant_y.mean())
+
+        plot_mantissa_arc_test(self.data, self.gravity_center,
+                               grid=grid, figsize=figsize,
+                               save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+
+class Benford(object):
+    """Initializes a Benford Analysis object and computes the proportions for
+    the digits. The tets dataFrames are atributes, i.e., obj.F1D is the First
+    Digit DataFrame, the obj.F2D,the First Two Digits one, and so one, F3D for
+    First Three Digits, SD for Second  Digit and L2D for Last Two Digits.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a tuple with a pandas DataFrame and the name (str)
+            of the chosen column. Values must be integers or floats.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+        confidence (int, float): confidence level to draw lower and upper limits when
+            plotting and to limit the top deviations to show, as well as to
+            calculate critical values for the tests' statistics. Defaults to 95.
+        mantissas (bool): opts for also running the mantissas Test. Defaulst to
+            True
+        sec_order: runs the Second Order tests, which are the Benford's tests
+            performed on the differences between the ordered sample (a value minus
+            the one before it, and so on). If the original series is Benford-
+            compliant, this new sequence should aldo follow Beford. The Second
+            Order can also be called separately, through the method sec_order().
+        summation: creates the Summation DataFrames for the First, First Two, and
+            First Three Digits. The summation tests can also be called separately,
+            through the method summation().
+        limit_N (int): sets a limit to N as the sample size for the calculation of
+            the Z scores if the sample is too big. Defaults to None.
+        verbose: gives some information about the data and the registries used
+            and discarded for each test.
+
+    Attributes:
+        data: the raw data provided for the analysis
+        chosen: the column of the DataFrame to be analysed or the data itself
+        sign (str): which number sign(s) to include in the analysis
+        confidence: current confidence level
+        limit_N (int): sample size to use in computations
+        verbose (bool): verbose or not
+        base: the Base, pre-processed object
+        tests (:obj:`list` of :obj:`str`): keeps track of the tests the
+            instance has
+    """
+
+    def __init__(self, data, decimals=2, sign='all', confidence=95,
+                 mantissas=True, sec_order=False, summation=False,
+                 limit_N=None, verbose=True):
+        self.data, self.chosen = input_data(data)
+        self.decimals = decimals
+        self.sign = sign
+        self.confidence = _check_confidence_(confidence)
+        self.limit_N = limit_N
+        self.verbose = verbose
+        self.base = Base(self.chosen, decimals, sign)
+        self.tests = []
+
+        # Create a DatFrame for each Test
+        for key, val in DIGS.items():
+            test = Test(self.base.loc[self.base[val] != -1],
+                        digs=key, confidence=self.confidence,
+                        limit_N=self.limit_N)
+            setattr(self, val, test)
+            self.tests.append(val)
+        # dict with the numbers of discarded entries for each test column
+        self._discarded = {key: val for (key, val) in
+                           zip(DIGS.values(),
+                               [len(self.base[col].loc[self.base[col] == -1])
+                                for col in DIGS.values()])}
+
+        if self.verbose:
+            print('\n', ' Объект Бенфорд создан '.center(50, '#'), '\n')
+            print(f'Исходный размер выборки: {len(self.chosen)}.\n')
+            print(f'Тест проведен на {len(self.base)} значениях.\n')
+            print(
+                f'Число исключенных значений для каждого теста:\n{self._discarded}')
+
+        if mantissas:
+            self.mantissas()
+
+        if sec_order:
+            self.sec_order()
+
+        if summation:
+            self.summation()
+
+    def update_confidence(self, new_conf, tests=None):
+        """Sets (a) new confidence level(s) for the Benford object, so as to be
+        used to produce critical values for the tests.
+
+        Args:
+            new_conf: new confidence level to draw lower and upper limits when
+                plotting and to limit the top deviations to show, as well as to
+                calculate critical values for the tests' statistics.
+            tests (:obj:`list` of :obj:`str`): list of tests names (strings) to
+                have their confidence updated. If only one, provide a one-element
+                list, like ['F1D']. Defauts to None, in which case it will use
+                the instance .test list attribute.
+
+        Raises:
+            ValueError: if the test argument is not a `list` or `None`.
+        """
+        self.confidence = _check_confidence_(new_conf)
+        if tests is None:
+            tests = self.tests
+        else:
+            if not isinstance(tests, list):
+                raise ValueError('tests must be a list or None.')
+        for test in tests:
+            try:
+                getattr(self, test).update_confidence(
+                            self.confidence, check=False)
+            except AttributeError as e:
+                if test in ['F1D_Summ', 'F2D_Summ', 'F3D_Summ']:
+                    pass
+                else:
+                    print(e,
+                        "\n\nТеста ", test, " в объекте Benford нет - "
+                        "проверьте имя теста.")
+
+    @property
+    def all_confidences(self):
+        """dict: a dictionary with a confidence level for each computed tests,
+        when applicable."""
+        con_dic = {}
+        for key in self.tests:
+            try:
+                con_dic[key] = getattr(self, key).confidence
+            except AttributeError:
+                continue
+        return con_dic
+
+    def mantissas(self):
+        """Adds a Mantissas object to the tests, with all its statistics and
+        plotting capabilities.
+        """
+        self.Mantissas = Mantissas(self.base.seq.values,
+                                   self.confidence, self.limit_N)
+        self.tests.append('Mantissas')
+        if self.verbose:
+            print('\nДобавлен Тест мантисс.')
+
+    def sec_order(self):
+        """Runs the Second Order tests, which are the Benford's tests
+        performed on the differences between the ordered sample (a value minus
+        the one before it, and so on). If the original series is Benford-
+        compliant, this new sequence should aldo follow Beford. The Second
+        Order can also be called separately, through the method sec_order().
+        """
+        #: Base instance of the differences between the ordered sample
+        self.base_sec = Base(subtract_sorted(self.chosen),
+                             decimals=self.decimals, sign=self.sign)
+        for key, val in DIGS.items():
+            test = Test(self.base_sec.loc[self.base_sec[val] != -1],
+                        digs=key, confidence=self.confidence,
+                        limit_N=self.limit_N, sec_order=True)
+            setattr(self, SEC_ORDER_DIGS[key], test)
+            self.tests.append(f'{val}_sec')
+            # No need to populate crit_vals dict, since they are the
+            # same and do not depend on N
+            self._discarded_sec = {key: val for (key, val) in zip(
+                                   SEC_ORDER_DIGS.values(),
+                                   [sum(self.base_sec[col] == -1) for col in
+                                    DIGS.values()])}
+        if self.verbose:
+            print(f'\nТест второго порядка проведен на {len(self.base_sec)} '
+                  'значениях.\n\nЧисло исключённых значений для'
+                  f' тестов второго порядка:\n{self._discarded_sec}')
+
+    def summation(self):
+        """Creates Summation test DataFrames from Base object"""
+        for test in ['F1D', 'F2D', 'F3D']:
+            t = f'{test}_Summ'
+            setattr(self, t, Summ(self.base, test))
+            self.tests.append(t)
+
+        if self.verbose:
+            print('\nДобавлены датафреймы суммирования к тестам 1 и 2 цифры.')
+
+
+class Source(DataFrame):
+    """Prepares the data for Analysis. pandas DataFrame subclass.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+        sec_order: choice for the Second Order Test, which cumputes the
+            differences between the ordered entries before running the Tests.
+        verbose (bool): tells the number of registries that are being subjected to
+            the analysis; defaults to True.
+
+    Raises:
+        ValueError: if the `sign` arg is not in ['all', 'pos', 'neg']
+        TypeError: if not receiving `int` or `float` as input.
+    """
+
+    def __init__(self, data, decimals=2, sign='all', sec_order=False,
+                 verbose=True, inform=None):
+
+        if sign not in ['all', 'pos', 'neg']:
+            raise ValueError("The -sign- argument must be "
+                             "'all','pos' or 'neg'.")
+
+        DataFrame.__init__(self, {'seq': data})
+
+        if self.seq.dtype != 'float' and self.seq.dtype != 'int':
+            raise TypeError('The sequence dtype was neither int nor float.\n'
+                            'Convert it to whether int or float, and try again.')
+
+        if sign == 'pos':
+            self.seq = self.seq.loc[self.seq > 0]
+        elif sign == 'neg':
+            self.seq = self.seq.loc[self.seq < 0]
+        else:
+            self.seq = self.seq.loc[self.seq != 0]
+
+        self.dropna(inplace=True)
+        #: (bool): verbose or not
+        self.verbose = _deprecate_inform_(verbose, inform)
+        if self.verbose:
+            print(f"\nПолучена последовательность из {len(self)} значений.")
+
+        if sec_order:
+            self.seq = subtract_sorted(self.seq.copy())
+            self.dropna(inplace=True)
+            self.reset_index(inplace=True)
+            if verbose:
+                print('Тесты второго порядка. Изначальная последовательность сокращена '
+                      f'до {len(self.seq)} записей.')
+
+        ab = self.seq.abs()
+
+        if self.seq.dtype == 'int':
+            self['ZN'] = ab
+        else:
+            if decimals == 'infer':
+                # There is some numerical issue with Windows that required
+                # implementing it differently (and slower)
+                self['ZN'] = ab.astype(str)\
+                               .str.replace('.', '', regex=False)\
+                               .str.lstrip('0').str[:5]\
+                               .astype(int)
+            else:
+                self['ZN'] = (ab * (10 ** decimals)).astype(int)
+
+    def mantissas(self, report=True, show_plot=None, figsize=(15, 8),
+                  save_plot=None, save_plot_kwargs=None):
+        """Calculates the mantissas, their mean and variance, and compares them
+        with the mean and variance of a Benford's sequence.
+
+        Args:
+            report: prints the mamtissas mean, variance, skewness and kurtosis
+                for the sequence studied, along with reference values.
+            show_plot: plots the ordered mantissas and a line with the expected
+                inclination. Defaults to True.
+            figsize: tuple that sets the figure dimensions.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+        """
+        self['Mant'] = get_mantissas(self.seq.abs())
+        if report:
+            p = self[['seq', 'Mant']]
+            p = p.loc[p.seq > 0].sort_values('Mant')
+            print(f"Среднее мантиисс: {p.Mant.mean()}. Теор.: 0.5.")
+            print(f"Отклонение мантисс равно {p.Mant.var()}. Теор.: 0.083333.")
+            print(f"Асимметрия мантисс равна {p.Mant.skew()}. Теор.: 0.")
+            print(f"эксцесс мантисс равен {p.Mant.kurt()}. Теор.: -1.2.")
+
+
+        if show_plot:
+            plot_ordered_mantissas(self.Mant, figsize=figsize,
+                                   save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+    def first_digits(self, digs, confidence=None, high_Z='pos',
+                     limit_N=None, MAD=False, MSE=False, chi_square=False,
+                     KS=False, show_plot=True, save_plot=None, save_plot_kwargs=None,
+                     simple=False, bhat_coeff = False, bhat_dist=False,
+                     kl_diverg=False, ret_df=False):
+        """Performs the Benford First Digits test with the series of
+        numbers provided, and populates the mapping dict for future
+        selection of the original series.
+
+        Args:
+            digs (int): number of first digits to consider. Must be 1 (first digit),
+                2 (first two digits) or 3 (first three digits).
+            verbose (bool): tells the number of registries that are being subjected to
+                the analysis; defaults to True
+            confidence (int, float): confidence level to draw lower and upper limits when
+                plotting and to limit the top deviations to show, as well as to
+                calculate critical values for the tests' statistics. Defaults to None.
+            high_Z (int): chooses which Z scores to be used when displaying results,
+                according to the confidence level chosen. Defaluts to 'pos',
+                which will highlight only values higher than the expexted
+                frequencies; 'all' will highlight both extremes (positive and
+                negative); and an integer, which will use the first n entries,
+                positive and negative, regardless of whether Z is higher than
+                the confidence or not.
+            limit_N (int): sets a limit to N as the sample size for the calculation of
+                the Z scores if the sample is too big. Defaults to None.
+            MAD (bool): calculates the Mean Absolute Difference between the
+                found and the expected distributions; defaults to False.
+            MSE (bool): calculates the Mean Square Error of the sample; defaults to
+                False.
+            bhat_coeff (bool): computes the Bhattacharyya Coefficient between
+                the found and the expected (Benford) digits distribution; defaults
+                to Fasle
+            bhat_dist (bool): calculates the Bhattacharyya Distance between
+                the found and the expected (Benford) digits distribution; defaults
+                to Fasle
+            kl_diverg (bool): calculates the Kulback-Laibler Divergence between
+                the found and the expected (Benford) digits distribution;
+                defaults to False
+            show_plot (bool): draws the test plot. Defaults to True.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+            ret_df: returns the test DataFrame. Defaults to False. True if run by
+                the test function.
+
+        Returns:
+            DataFrame with the Expected and Found proportions, and the Z scores of
+                the differences
+        """
+        # Check on the possible values for confidence levels
+        confidence = _check_confidence_(confidence)
+        # Check on possible digits
+        _check_digs_(digs)
+
+        temp = self.loc[self.ZN >= 10 ** (digs - 1)]
+        temp[DIGS[digs]] = (temp.ZN // 10 ** ((log10(temp.ZN).astype(
+                                                   int)) - (digs - 1))).astype(
+                                                       int)
+        n, m = 10 ** (digs - 1), 10 ** (digs)
+        x = arange(n, m)
+
+        if simple:
+            self.verbose = False
+            show_plot = False
+            df = prepare(temp[DIGS[digs]], digs, limit_N=limit_N,
+                         simple=True)
+        else:
+            N, df = prepare(temp[DIGS[digs]], digs, limit_N=limit_N,
+                            simple=False)
+
+        if self.verbose:
+            print(f"\nТест проведен на {len(temp)} значениях.\n"
+              f"Исключено {len(self) - len(temp)} значений, которые < {10 ** (digs - 1)}"
+              ".")
+
+            if confidence is not None:
+                _inform_(df, high_Z=high_Z, conf=CONFS[confidence])
+
+        # Mean absolute difference
+        if MAD:
+            self.MAD = df.Абс_Разность.mean()
+            if self.verbose:
+                _report_mad_(digs, self.MAD)
+
+        # Mean Square Error
+        if MSE:
+            self.MSE = (df.Абс_Разность ** 2).mean()
+
+        # Chi-square statistic
+        if chi_square:
+            self.chi_square = chi_sq(df, ddf=len(df) - 1,
+                                     confidence=confidence,
+                                     verbose=self.verbose)
+        # KS test
+        if KS:
+            self.KS = kolmogorov_smirnov(df, confidence=confidence, N=len(temp),
+                                         verbose=self.verbose)
+
+        if bhat_coeff:
+            self.bhat_coeff = _bhattacharyya_coefficient(
+                                df.Факт.values, df.Теор.values)
+
+        if bhat_dist:
+            self.bhat_dist = _bhattacharyya_distance_(
+                                df.Факт.values, df.Теор.values)
+        
+        if kl_diverg:
+            self.kl_diverg = _kullback_leibler_divergence_(
+                                df.Факт.values, df.Теор.values)
+
+        # Plotting the expected frequncies (line) against the found ones(bars)
+        if show_plot:
+            plot_digs(df, x=x, y_Exp=df.Теор, y_Found=df.Факт, N=N,
+                       figsize=(2 * (digs ** 2 + 5), 1.5 * (digs ** 2 + 5)),
+                       conf_Z=CONFS[confidence], save_plot=save_plot,
+                       save_plot_kwargs=save_plot_kwargs)
+        if ret_df:
+            return df
+
+    def second_digit(self, confidence=None, high_Z='pos',
+                     limit_N=None, MAD=False, MSE=False, chi_square=False,
+                     KS=False, bhat_coeff=False, bhat_dist=False, kl_diverg=False,
+                     show_plot=True, save_plot=None, save_plot_kwargs=None,
+                     simple=False, ret_df=False):
+        """Performs the Benford Second Digit test with the series of
+        numbers provided.
+
+        Args:
+            verbose (bool): tells the number of registries that are being subjected to
+                the analysis; defaults to True
+            MAD (bool): calculates the Mean Absolute Difference between the
+                found and the expected distributions; defaults to False.
+            confidence (int, float): confidence level to draw lower and upper limits when
+                plotting and to limit the top deviations to show, as well as to
+                calculate critical values for the tests' statistics. Defaults to None.
+            high_Z (int): chooses which Z scores to be used when displaying results,
+                according to the confidence level chosen. Defaluts to 'pos',
+                which will highlight only values higher than the expexted
+                frequencies; 'all' will highlight both extremes (positive and
+                negative); and an integer, which will use the first n entries,
+                positive and negative, regardless of whether Z is higher than
+                the confidence or not.
+            limit_N (int): sets a limit to N as the sample size for the calculation of
+                the Z scores if the sample is too big. Defaults to None.
+            MSE (bool): calculates the Mean Square Error of the sample; defaults to
+                False.
+            bhat_coeff (bool): computes the Bhattacharyya Coefficient between
+                the found and the expected (Benford) digits distribution; defaults
+                to Fasle
+            bhat_dist (bool): calculates the Bhattacharyya Distance between
+                the found and the expected (Benford) digits distribution; defaults
+                to Fasle
+            kl_diverg (bool): calculates the Kulback-Laibler Divergence between
+                the found and the expected (Benford) digits distribution;
+                defaults to False
+            show_plot (bool): draws the test plot.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+            ret_df: returns the test DataFrame. Defaults to False. True if run by
+                the test function.
+
+        Returns:
+            DataFrame with the Expected and Found proportions, and the Z scores of
+                the differences
+        """
+        confidence = _check_confidence_(confidence)
+
+        conf = CONFS[confidence]
+
+        temp = self.loc[self.ZN >= 10, :]
+        temp['SD'] = (temp.ZN // 10 ** ((log10(temp.ZN)).astype(
+                      int) - 1)) % 10
+
+        if simple:
+            self.verbose = False
+            show_plot = False
+            df = prepare(temp['SD'], 22, limit_N=limit_N, simple=True)
+        else:
+            N, df = prepare(temp['SD'], 22, limit_N=limit_N, simple=False)
+
+        if self.verbose:
+            print(f"\Тест проведен на {len(temp)} значениях.\nОтброшено "
+              f"{len(self) - len(temp)} записей, которые < 10.")
+
+            if confidence is not None:
+                _inform_(df, high_Z, conf)
+
+        # Mean absolute difference
+        if MAD:
+            self.MAD = df.Абс_Разность.mean()
+            if self.verbose:
+                _report_mad_(22, self.MAD)
+        # Mean Square Error
+        if MSE:
+            self.MSE = (df.Абс_Разность ** 2).mean()
+
+        # Chi-square statistic
+        if chi_square:
+            self.chi_square = chi_sq(df, ddf=9, confidence=confidence,
+                                     verbose=self.verbose)
+        # KS test
+        if KS:
+            self.KS = kolmogorov_smirnov(df, confidence=confidence, N=len(temp),
+
+                                         verbose=self.verbose)
+        if bhat_coeff:
+            self.bhat_coeff = _bhattacharyya_coefficient(
+                                df.Факт.values, df.Теор.values)
+
+        if bhat_dist:
+            self.bhat_dist = _bhattacharyya_distance_(
+                                df.Факт.values, df.Теор.values
+                            )
+        
+        if kl_diverg:
+            self.kl_diverg = _kullback_leibler_divergence_(
+                                df.Факт.values, df.Теор.values
+                            )
+
+        # Plotting the expected frequncies (line) against the found ones(bars)
+        if show_plot:
+            plot_digs(df, x=arange(0, 10), y_Exp=df.Теор,
+                       y_Found=df.Факт, N=N, figsize=(10, 6), conf_Z=conf,
+                       save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+        if ret_df:
+            return df
+
+    def last_two_digits(self, confidence=None, high_Z='pos',
+                        limit_N=None, MAD=False, MSE=False, chi_square=False,
+                        KS=False, bhat_coeff=False, bhat_dist=False, kl_diverg=False,
+                        show_plot=True, save_plot=None, save_plot_kwargs=None,
+                        simple=False, ret_df=False):
+        """Performs the Benford Last Two Digits test with the series of
+        numbers provided.
+
+        Args:
+            verbose (bool): tells the number of registries that are being subjected to
+                the analysis; defaults to True
+            MAD (bool): calculates the Mean Absolute Difference between the
+                found and the expected distributions; defaults to False.
+            confidence (int, float): confidence level to draw lower and upper limits when
+                plotting and to limit the top deviations to show, as well as to
+                calculate critical values for the tests' statistics. Defaults to None.
+            high_Z (int): chooses which Z scores to be used when displaying results,
+                according to the confidence level chosen. Defaluts to 'pos',
+                which will highlight only values higher than the expexted
+                frequencies; 'all' will highlight both extremes (positive and
+                negative); and an integer, which will use the first n entries,
+                positive and negative, regardless of whether Z is higher than
+                the confidence or not.
+            limit_N (int): sets a limit to N as the sample size for the calculation of
+                the Z scores if the sample is too big. Defaults to None.
+            MSE (bool): calculates the Mean Square Error of the sample; defaults to
+                False.
+            bhat_coeff (bool): computes the Bhattacharyya Coefficient between
+                the found and the expected (Benford) digits distribution; defaults
+                to Fasle
+            bhat_dist (bool): calculates the Bhattacharyya Distance between
+                the found and the expected (Benford) digits distribution; defaults
+                to Fasle
+            kl_diverg (bool): calculates the Kulback-Laibler Divergence between
+                the found and the expected (Benford) digits distribution;
+                defaults to False
+            show_plot (bool): draws the test plot.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+        
+        Returns:
+            DataFrame with the Expected and Found proportions, and the Z scores of
+                the differences
+        """
+        confidence = _check_confidence_(confidence)
+        conf = CONFS[confidence]
+
+        temp = self.loc[self.ZN >= 1000]
+        temp['L2D'] = temp.ZN % 100
+
+        if simple:
+            self.verbose = False
+            show_plot = False
+            df = prepare(temp['L2D'], -2, limit_N=limit_N, simple=True)
+        else:
+            N, df = prepare(temp['L2D'], -2, limit_N=limit_N, simple=False)
+
+        if self.verbose:
+            print(f"\nТест проведен на {len(temp)} значениях.\n\nИсключено "
+              f"{len(self) - len(temp)} значений, которые < 1000.")
+
+            if confidence is not None:
+                _inform_(df, high_Z, conf)
+
+        # Mean absolute difference
+        if MAD:
+            self.MAD = df.Абс_Разность.mean()
+            if self.verbose:
+                _report_mad_(-2, self.MAD)
+        # Mean Square Error
+        if MSE:
+            self.MSE = (df.Абс_Разность ** 2).mean()
+
+        # Chi-square statistic
+        if chi_square:
+            self.chi_square = chi_sq(df, ddf=99, confidence=confidence,
+                                     verbose=self.verbose)
+        # KS test
+        if KS:
+            self.KS = kolmogorov_smirnov(df, confidence=confidence, N=len(temp),
+                                         verbose=self.verbose)
+
+        if bhat_coeff:
+            self.bhat_coeff = _bhattacharyya_coefficient(
+                                df.Факт.values, df.Теор.values)
+
+        if bhat_dist:
+            self.bhat_dist = _bhattacharyya_distance_(
+                                df.Факт.values, df.Теор.values)
+        
+        if kl_diverg:
+            self.kl_diverg = _kullback_leibler_divergence_(
+                                df.Факт.values, df.Теор.values)
+
+        # Plotting expected frequencies (line) versus found ones (bars)
+        if show_plot:
+            plot_digs(df, x=arange(0, 100), y_Exp=df.Теор,
+                       y_Found=df.Факт, N=N, figsize=(15, 5),
+                       conf_Z=conf, text_x=True, save_plot=save_plot,
+                       save_plot_kwargs=save_plot_kwargs)
+        if ret_df:
+            return df
+
+    def summation(self, digs=2, top=20, show_plot=True, save_plot=None,
+                  save_plot_kwargs=None, ret_df=False):
+        """Performs the Summation test. In a Benford series, the sums of the
+        entries begining with the same digits tends to be the same.
+
+        Args:
+            digs: tells the first digits to use. 1- first; 2- first two;
+                3- first three. Defaults to 2.
+            top: choses how many top values to show. Defaults to 20.
+            show_plot: plots the results. Defaults to True.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension. Only available when
+                plot=True.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when plot=True and save_plot is a string with the
+                figure file path/name.
+        
+        Returns:
+            DataFrame with the Expected and Found proportions, and their
+                absolute differences
+        """
+        _check_digs_(digs)
+
+        if digs == 1:
+            top = 9
+        # Call the dict for F1D, F2D, F3D
+        d = DIGS[digs]
+        if d not in self.columns:
+            self[d] = self.ZN.astype(str).str[:digs].astype(int)
+        # Call the expected proportion according to digs
+        li = 1. / (9 * (10 ** (digs - 1)))
+
+        df = self.groupby(d).sum()
+        # s.drop(0, inplace=True)
+        df['Доля'] = df.ZN / df.ZN.sum()
+        df.columns.values[1] = 'Сумма'
+        df = df[['Сумма', 'Доля']]
+        df['Абс_Разность'] = (df.Доля - li).abs()
+
+        if self.verbose:
+            # N = len(self)
+            print(f"\nТест проведен на {len(self)} значениях.\n")
+            print(f"{top} наибольших отклонений\n")
+            print(df[:top])
+
+        if show_plot:
+            plot_sum(df, figsize=(
+                       2 * (digs ** 2 + 5), 1.5 * (digs ** 2 + 5)), li=li,
+                       save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+        if ret_df:
+            return df
+
+    def duplicates(self, top_Rep=20, inform=None):
+        """Performs a duplicates test and maps the duplicates count in descending
+        order.
+
+        Args:
+            verbose (bool): tells how many duplicated entries were found and prints the
+                top numbers according to the top_Rep argument. Defaluts to True.
+            top_Rep: int or None. Chooses how many duplicated entries will be
+                shown withe the top repititions. Defaluts to 20. If None, returns
+                al the ordered repetitions.
+
+        Returns:
+            DataFrame with the duplicated records and their occurrence counts,
+                in descending order (if verbose is False; if True, prints to
+                terminal).
+
+        Raises:
+            ValueError: if the `top_Rep` arg is not int or None.
+        """
+        if top_Rep is not None and not isinstance(top_Rep, int):
+            raise ValueError('The top_Rep argument must be an int or None.')
+
+        dup = self[['seq']][self.seq.duplicated(keep=False)]
+        dup_count = dup.groupby(self.seq).count()
+
+        dup_count.index.names = ['Entries']
+        dup_count.rename(columns={'seq': 'Count'}, inplace=True)
+
+        dup_count.sort_values('Count', ascending=False, inplace=True)
+
+        # self.maps['dup'] = dup_count.index[:top_Rep].values  # array
+
+        if self.verbose:
+            print(f'\nНайдено {len(dup_count)} дублированных записей.\n'
+                        f'Записи с {top_Rep} наибольшим количеством повторений:')
+            print(dup_count.head(top_Rep))
+
+        else:
+            return dup_count
+
+class Roll_mad(object):
+    """Applies the MAD to sequential subsets of the Series, returning another
+    Series.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        test: tells which test to use. 1: Fisrt Digits; 2: First Two Digits;
+            3: First Three Digits; 22: Second Digit; and -2: Last Two Digits.
+        window: size of the subset to be used.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+
+    """
+
+    def __init__(self, data, test, window, decimals=2, sign='all'):
+
+        #: the test (F1D, SD, F2D...) used for the MAD calculation and critical values
+        self.test = _check_test_(test)
+
+        if not isinstance(data, Source):
+            data = Source(data, sign=sign, decimals=decimals, verbose=False)
+
+        Exp, ind = prep_to_roll(data, self.test)
+
+        self.roll_series = data[DIGS[test]].rolling(
+                                window=window).apply(mad_to_roll, 
+                                    args=(Exp, ind), raw=False)
+        self.roll_series.dropna(inplace=True)
+
+    def show_plot(self, figsize=(15, 8), save_plot=None, save_plot_kwargs=None):
+        """Shows the rolling MAD plot
+
+        Args:
+            figsize: the figure dimensions.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when save_plot is a string with the figure file
+                path/name.
+        """
+        plot_roll_mad(self, figsize=figsize,
+                      save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+
+class Roll_mse(object):
+    """Applies the MSE to sequential subsets of the Series, returning another
+    Series.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        test: tells which test to use. 1: Fisrt Digits; 2: First Two Digits;
+            3: First Three Digits; 22: Second Digit; and -2: Last Two Digits.
+        window: size of the subset to be used.
+            decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. 'pos': only the positive
+            entries; 'neg': only negative entries; 'all': all entries but zeros.
+            Defaults to 'all'.
+    """
+
+    def __init__(self, data, test, window, decimals=2, sign='all'):
+
+        test = _check_test_(test)
+
+        if not isinstance(data, Source):
+            data = Source(data, sign=sign, decimals=decimals, verbose=False)
+
+        Exp, ind = prep_to_roll(data, test)
+
+        self.roll_series = data[DIGS[test]].rolling(
+                                window=window).apply(mse_to_roll, 
+                                    args=(Exp, ind), raw=False)
+        self.roll_series.dropna(inplace=True)
+
+    def show_plot(self, figsize=(15, 8), save_plot=None, save_plot_kwargs=None):
+        """Shows the rolling MSE plot
+
+        Args:
+            figsize: the figure dimensions.
+            save_plot (str): string with the path/name of the file in which the generated
+                plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+                is infered by the file name extension.
+            save_plot_kwargs (dict): any of the kwargs accepted by
+                matplotlib.pyplot.savefig()
+                https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+                Only available when save_plot is a string with the figure file
+                path/name.
+        """
+        plot_roll_mse(self.roll_series, figsize=figsize,
+                      save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+
+
+def first_digits(data, digs, decimals=2, sign='all', verbose=True,
+                 confidence=None, high_Z='pos', limit_N=None,
+                 MAD=False, MSE=False, chi_square=False, KS=False,
+                 show_plot=True, save_plot=None, save_plot_kwargs=None,
+                 inform=None):
+    """Performs the Benford First Digits test on the series of
+    numbers provided.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. 'pos': only the positive
+            entries; 'neg': only negative entries; 'all': all entries but zeros.
+            Defaults to 'all'.
+        digs (int): number of first digits to consider. Must be 1 (first digit),
+            2 (first two digits) or 3 (first three digits).
+        verbose (bool): tells the number of registries that are being subjected to
+            the analysis and returns tha analysis DataFrame sorted by the
+            highest Z score down. Defaults to True.
+        MAD (bool): calculates the Mean Absolute Difference between the
+            found and the expected distributions; defaults to False.
+        confidence (int, float): confidence level to draw lower and upper limits when
+            plotting and to limit the top deviations to show. Defaults to None.
+        high_Z (int): chooses which Z scores to be used when displaying results,
+            according to the confidence level chosen. Defaluts to 'pos',
+            which will highlight only values higher than the expexted
+            frequencies; 'all' will highlight both extremes (positive and
+            negative); and an integer, which will use the first n entries,
+            positive and negative, regardless of whether Z is higher than
+            the confidence or not.
+        limit_N (int): sets a limit to N as the sample size for the calculation of
+            the Z scores if the sample is too big. Defaults to None.
+        MSE (bool): calculates the Mean Square Error of the sample; defaults to
+            False.
+        chi_square: calculates the chi_square statistic of the sample and
+            compares it with a critical value, according to the confidence
+            level chosen and the series's degrees of freedom. Defaults to
+            False. Requires confidence != None.
+        KS: calculates the Kolmogorov-Smirnov test, comparing the cumulative
+            distribution of the sample with the Benford's, according to the
+            confidence level chosen. Defaults to False. Requires confidence
+            != None.
+        show_plot (bool): draws the test plot.
+        save_plot (str): string with the path/name of the file in which the generated
+            plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+            is infered by the file name extension. Only available when
+            plot=True.
+        save_plot_kwargs (dict): any of the kwargs accepted by
+            matplotlib.pyplot.savefig()
+            https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+            Only available when plot=True and save_plot is a string with the
+            figure file path/name.
+    
+    Returns:
+        DataFrame with the Expected and Found proportions, and the Z scores of
+            the differences if the confidence is not None.
+    """
+    verbose = _deprecate_inform_(verbose, inform)
+
+    if not isinstance(data, Source):
+        data = Source(data, decimals=decimals, sign=sign, verbose=verbose)
+
+    data = data.first_digits(digs, confidence=confidence, high_Z=high_Z,
+                             limit_N=limit_N, MAD=MAD, MSE=MSE,
+                             chi_square=chi_square, KS=KS, show_plot=show_plot,
+                             save_plot=save_plot, save_plot_kwargs=save_plot_kwargs,
+                             ret_df=True)
+
+    if confidence is not None:
+        data = data[['Counts', 'Факт', 'Теор', 'Z_статистика']]
+        return data.sort_values('Z_статистика', ascending=False)
+    else:
+        return data[['Counts', 'Факт', 'Теор']]
+
+
+def second_digit(data, decimals=2, sign='all', verbose=True,
+                 confidence=None, high_Z='pos', limit_N=None,
+                 MAD=False, MSE=False, chi_square=False, KS=False,
+                 show_plot=True, save_plot=None, save_plot_kwargs=None,
+                 inform=None):
+    """Performs the Benford Second Digits test on the series of
+    numbers provided.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. 'pos': only the positive
+            entries; 'neg': only negative entries; 'all': all entries but zeros.
+            Defaults to 'all'.
+        verbose (bool): tells the number of registries that are being subjected to
+            the analysis and returns tha analysis DataFrame sorted by the
+            highest Z score down. Defaults to True.
+        MAD (bool): calculates the Mean Absolute Difference between the
+            found and the expected distributions; defaults to False.
+        confidence (int, float): confidence level to draw lower and upper limits when
+            plotting and to limit the top deviations to show. Defaults to None.
+        high_Z (int): chooses which Z scores to be used when displaying results,
+            according to the confidence level chosen. Defaluts to 'pos',
+            which will highlight only values higher than the expexted
+            frequencies; 'all' will highlight both extremes (positive and
+            negative); and an integer, which will use the first n entries,
+            positive and negative, regardless of whether Z is higher than
+            the confidence or not.
+        limit_N (int): sets a limit to N as the sample size for the calculation of
+            the Z scores if the sample is too big. Defaults to None.
+        MSE (bool): calculates the Mean Square Error of the sample; defaults to
+            False.
+        chi_square: calculates the chi_square statistic of the sample and
+            compares it with a critical value, according to the confidence
+            level chosen and the series's degrees of freedom. Defaults to
+            False. Requires confidence != None.
+        KS: calculates the Kolmogorov-Smirnov test, comparing the cumulative
+            distribution of the sample with the Benford's, according to the
+            confidence level chosen. Defaults to False. Requires confidence
+            != None.
+        show_plot (bool): draws the test plot.
+        save_plot (str): string with the path/name of the file in which the generated
+            plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+            is infered by the file name extension. Only available when
+            plot=True.
+        save_plot_kwargs (dict): any of the kwargs accepted by
+            matplotlib.pyplot.savefig()
+            https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+            Only available when plot=True and save_plot is a string with the
+            figure file path/name.
+
+    Returns:
+        DataFrame with the Expected and Found proportions, and the Z scores of
+            the differences if the confidence is not None.
+    """
+    verbose = _deprecate_inform_(verbose, inform)
+
+    if not isinstance(data, Source):
+        data = Source(data, sign=sign, decimals=decimals, verbose=verbose)
+
+    data = data.second_digit(confidence=confidence, high_Z=high_Z,
+                             limit_N=limit_N, MAD=MAD, MSE=MSE,
+                             chi_square=chi_square, KS=KS, show_plot=show_plot,
+                             save_plot=save_plot, save_plot_kwargs=save_plot_kwargs,
+                             ret_df=True)
+    if confidence is not None:
+        data = data[['Counts', 'Факт', 'Теор', 'Z_статистика']]
+        return data.sort_values('Z_статистика', ascending=False)
+    else:
+        return data[['Counts', 'Факт', 'Теор']]
+
+
+def last_two_digits(data, decimals=2, sign='all', verbose=True,
+                    confidence=None, high_Z='pos', limit_N=None,
+                    MAD=False, MSE=False, chi_square=False, KS=False,
+                    show_plot=True, save_plot=None, save_plot_kwargs=None,
+                    inform=None):
+    """Performs the Last Two Digits test on the series of
+    numbers provided.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column,with values being
+            integers or floats.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. 'pos': only the positive
+            entries; 'neg': only negative entries; 'all': all entries but zeros.
+            Defaults to 'all'.
+        verbose (bool): tells the number of registries that are being subjected to
+            the analysis and returns tha analysis DataFrame sorted by the
+            highest Z score down. Defaults to True.
+        confidence (int, float): confidence level to draw lower and upper limits when
+            plotting and to limit the top deviations to show. Defaults to None.
+        high_Z (int): chooses which Z scores to be used when displaying results,
+            according to the confidence level chosen. Defaluts to 'pos',
+            which will highlight only values higher than the expexted
+            frequencies; 'all' will highlight both extremes (positive and
+            negative); and an integer, which will use the first n entries,
+            positive and negative, regardless of whether Z is higher than
+            the confidence or not.
+        limit_N (int): sets a limit to N as the sample size for the calculation of
+            the Z scores if the sample is too big. Defaults to None.
+        MAD (bool): calculates the Mean Absolute Difference between the
+            found and the expected distributions; defaults to False.
+        MSE (bool): calculates the Mean Square Error of the sample; defaults to
+            False.
+        chi_square: calculates the chi_square statistic of the sample and
+            compares it with a critical value, according to the confidence
+            level chosen and the series's degrees of freedom. Defaults to
+            False. Requires confidence != None.
+        KS: calculates the Kolmogorov-Smirnov test, comparing the cumulative
+            distribution of the sample with the Benford's, according to the
+            confidence level chosen. Defaults to False. Requires confidence
+            != None.
+        show_plot (bool): draws the test plot.
+        save_plot (str): string with the path/name of the file in which the generated
+            plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+            is infered by the file name extension. Only available when
+            plot=True.
+        save_plot_kwargs (dict): any of the kwargs accepted by
+            matplotlib.pyplot.savefig()
+            https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+            Only available when plot=True and save_plot is a string with the
+            figure file path/name.
+
+    Returns:
+        DataFrame with the Expected and Found proportions, and the Z scores of
+            the differences if the confidence is not None.
+    """
+    verbose = _deprecate_inform_(verbose, inform)
+
+    if not isinstance(data, Source):
+        data = Source(data, decimals=decimals, sign=sign, verbose=verbose)
+
+    data = data.last_two_digits(confidence=confidence, high_Z=high_Z,
+                                limit_N=limit_N, MAD=MAD,
+                                MSE=MSE, chi_square=chi_square, KS=KS,
+                                show_plot=show_plot, save_plot=save_plot,
+                                save_plot_kwargs=save_plot_kwargs, ret_df=True)
+
+    if confidence is not None:
+        data = data[['Counts', 'Факт', 'Теор', 'Z_статистика']]
+        return data.sort_values('Z_статистика', ascending=False)
+    else:
+        return data[['Counts', 'Факт', 'Теор']]
+
+
+def mantissas(data, report=True, show_plot=True, arc_test=True,
+              save_plot=None, save_plot_kwargs=None, inform=None):
+    """Extraxts the mantissas of the records logarithms
+
+    Args:
+        data: sequence to compute mantissas from, numpy 1D array, pandas Series
+            of pandas DataFrame column.
+        report: prints the mamtissas mean, variance, skewness and kurtosis
+            for the sequence studied, along with reference values.
+        show_plot: plots the ordered mantissas and a line with the expected
+            inclination. Defaults to True.
+        arc_test: draws the Arc Test plot. Defaluts to True.
+        save_plot (str): string with the path/name of the file in which the generated
+            plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+            is infered by the file name extension. Only available when
+            plot=True.
+        save_plot_kwargs (dict): any of the kwargs accepted by
+            matplotlib.pyplot.savefig()
+            https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+            Only available when plot=True and save_plot is a string with the
+            figure file path/name.
+    
+    Returns:
+        Series with the data mantissas.
+    """
+    report = _deprecate_inform_(report, inform)
+
+    mant = Mantissas(data)
+    if report:
+        mant.report(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    if show_plot:
+        mant.show_plot(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    if arc_test:
+        mant.arc_test(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    return mant
+
+
+def summation(data, digs=2, decimals=2, sign='all', top=20, verbose=True,
+              show_plot=True, save_plot=None, save_plot_kwargs=None, inform=None):
+    """Performs the Summation test. In a Benford series, the sums of the
+    entries begining with the same digits tends to be the same.
+    Works only with the First Digits (1, 2 or 3) test.
+
+    Args:
+        digs: tells the first digits to use: 1- first; 2- first two;
+            3- first three. Defaults to 2.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        top: choses how many top values to show. Defaults to 20.
+        show_plot: plots the results. Defaults to True.
+        save_plot (str): string with the path/name of the file in which the generated
+            plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+            is infered by the file name extension. Only available when
+            plot=True.
+        save_plot_kwargs (dict): any of the kwargs accepted by
+            matplotlib.pyplot.savefig()
+            https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+            Only available when plot=True and save_plot is a string with the
+            figure file path/name.
+    
+    Returns:
+        DataFrame with the Summation test, whether sorted in descending order
+            (if verbose == True) or not.
+    """
+    verbose = _deprecate_inform_(verbose, inform)
+
+    if not isinstance(data, Source):
+        data = Source(data, sign=sign, decimals=decimals, verbose=verbose)
+
+    data = data.summation(digs=digs, top=top,
+                          show_plot=show_plot, save_plot=save_plot,
+                          save_plot_kwargs=save_plot_kwargs, ret_df=True)
+    if verbose:
+        return data.sort_values('Абс_Разность', ascending=False)
+    else:
+        return data
+
+
+def mad(data, test, decimals=2, sign='all', verbose=False):
+    """Calculates the Mean Absolute Deviation of the Series
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        test: informs which base test to use for the mad.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+
+    Returns:
+        float: the Mean Absolute Deviation of the Series
+    """
+    data = _check_num_array_(data)
+    test = _check_test_(test)
+    start = Source(data, sign=sign, decimals=decimals, verbose=verbose)
+    if test in [1, 2, 3]:
+        start.first_digits(digs=test, MAD=True, MSE=True, simple=True)
+    elif test == 22:
+        start.second_digit(MAD=True, MSE=False, simple=True)
+    else:
+        start.last_two_digits(MAD=True, MSE=False, simple=True)
+    return start.MAD
+
+
+def mse(data, test, decimals=2, sign='all', verbose=False):
+    """Calculates the Mean Squared Error of the Series
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        test: informs which base test to use for the mad.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+
+    Returns:
+        float: the Mean Squared Error of the Series
+    """
+    data = _check_num_array_(data)
+    test = _check_test_(test)
+    start = Source(data, sign=sign, decimals=decimals, verbose=verbose)
+    if test in [1, 2, 3]:
+        start.first_digits(digs=test, MAD=False, MSE=True, simple=True)
+    elif test == 22:
+        start.second_digit(MAD=False, MSE=True, simple=True)
+    else:
+        start.last_two_digits(MAD=False, MSE=True, simple=True)
+    return start.MSE
+
+
+def bhattacharyya_distance(data, test, decimals, sign="all", verbose=False):
+    """Computes the Bhattacharyya Distance between the Found and the Expected
+    (Benford) digits distributions, according toe the test chosen
+    (First, Second, First Two...)
+
+    Args:
+        data (ndarray, Series): sequence to be evaluated, with values being
+            integers or floats.
+        test (int, str): informs which base test to be used.
+        decimals (int): number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign (str, optional): tells which portion of the data to consider.
+            pos: only the positive entries; neg: only negative entries; all:
+            all entries but zeros. Defaults to "all".
+
+    Returns:
+        float: the Bhattacharyya Distance between the distributions
+    """
+    data = _check_num_array_(data)
+    test = _check_test_(test)
+    start = Source(data, sign=sign, decimals=decimals, verbose=verbose)
+    if test in [1, 2, 3]:
+        start.first_digits(digs=test, MAD=False, bhat_dist=True, simple=True)
+    elif test == 22:
+        start.second_digit(MAD=False, bhat_dist=True, simple=True)
+    else:
+        start.last_two_digits(MAD=False, bhat_dist=True, simple=True)
+    return start.bhat_dist
+
+
+def kullback_leibler_divergence(data, test, decimals, sign="all",
+                                verbose=False):
+    """Computes the Kulback-Leibler Divergence between the Found and the
+    Expected (Benford) digits distributions, according toe the test chosen
+    (First, Second, First Two...).
+
+    Args:
+        data (ndarray, Series): sequence to be evaluated, with values being
+            integers or floats.
+        test (int, str): informs which base test to be used.
+        decimals (int): number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign (str, optional): tells which portion of the data to consider.
+            pos: only the positive entries; neg: only negative entries; all:
+            all entries but zeros. Defaults to "all".
+
+    Returns:
+        float: the Kulback-Leibler Divergence between the distributions
+    """
+    data = _check_num_array_(data)
+    test = _check_test_(test)
+    start = Source(data, sign=sign, decimals=decimals, verbose=verbose)
+    if test in [1, 2, 3]:
+        start.first_digits(digs=test, MAD=False, kl_diverg=True, simple=True)
+    elif test == 22:
+        start.second_digit(MAD=False, kl_diverg=True, simple=True)
+    else:
+        start.last_two_digits(MAD=False, kl_diverg=True, simple=True)
+    return start.kl_diverg
+
+
+def mad_summ(data, test, decimals=2, sign='all', verbose=False):
+    """Calculate the Mean Absolute Deviation of the Summation Test
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        test: informs which base test to use for the summation mad.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+
+    Returns:
+        float: the Mean Absolute Deviation of the Summation Test
+    """
+    data = _check_num_array_(data)
+    test = _check_digs_(test)
+
+    start = Source(data, sign=sign, decimals=decimals, verbose=verbose)
+    temp = start.loc[start.ZN >= 10 ** (test - 1)]
+    temp[DIGS[test]] = (temp.ZN // 10 ** ((log10(temp.ZN).astype(
+                                                int)) - (test - 1))).astype(
+                                                    int)
+    li = 1. / (9 * (10 ** (test - 1)))
+
+    df = temp.groupby(DIGS[test]).sum()
+    return mean(abs(df.ZN / df.ZN.sum() - li))
+
+
+def rolling_mad(data, test, window, decimals=2, sign='all',
+                show_plot=False, save_plot=None, save_plot_kwargs=None):
+    """Applies the MAD to sequential subsets of the records.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        test: tells which test to use. 1: Fisrt Digits; 2: First Two Digits;
+            3: First Three Digits; 22: Second Digit; and -2: Last Two Digits.
+        window: size of the subset to be used.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+        show_plot (bool): draws the test plot.
+        save_plot (str): string with the path/name of the file in which the generated
+            plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+            is infered by the file name extension. Only available when
+            plot=True.
+        save_plot_kwargs (dict): any of the kwargs accepted by
+            matplotlib.pyplot.savefig()
+            https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+            Only available when plot=True and save_plot is a string with the
+            figure file path/name.
+    
+    Returns:
+        Series with sequentially computed MADs.
+    """
+    data = _check_num_array_(data)
+    r_mad = Roll_mad(data, test, window, decimals, sign)
+    if show_plot:
+        r_mad.show_plot(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    return r_mad.roll_series
+
+
+def rolling_mse(data, test, window, decimals=2, sign='all',
+                show_plot=False, save_plot=None, save_plot_kwargs=None):
+    """Applies the MSE to sequential subsets of the records.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        test: tells which test to use. 1: Fisrt Digits; 2: First Two Digits;
+            3: First Three Digits; 22: Second Digit; and -2: Last Two Digits.
+        window: size of the subset to be used.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+        show_plot (bool): draws the test plot.
+        save_plot (str): string with the path/name of the file in which the generated
+            plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+            is infered by the file name extension. Only available when
+            plot=True.
+        save_plot_kwargs (dict): any of the kwargs accepted by
+            matplotlib.pyplot.savefig()
+            https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+            Only available when plot=True and save_plot is a string with the
+            figure file path/name.
+    
+    Returns:
+        Series with sequentially computed MSEs.
+    """
+    data = _check_num_array_(data)
+    r_mse = Roll_mse(data, test, window, decimals, sign)
+    if show_plot:
+        r_mse.show_plot(save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    return r_mse.roll_series
+
+
+def duplicates(data, top_Rep=20, verbose=True, inform=None):
+    """Performs a duplicates test and maps the duplicates count in descending
+    order.
+
+    Args:
+        data: sequence to take the duplicates from. pandas Series or
+            numpy Ndarray.
+        verbose (bool): tells how many duplicated entries were found and prints the
+            top numbers according to the top_Rep argument. Defaluts to True.
+        top_Rep: chooses how many duplicated entries will be
+            shown withe the top repititions. int or None. Defaluts to 20.
+            If None, returns al the ordered repetitions.
+
+    Returns:
+        DataFrame with the duplicated records and their respective counts
+
+    Raises:
+        ValueError: if the `top_Rep` arg is not int or None.
+    """
+    verbose = _deprecate_inform_(verbose, inform)
+
+    if top_Rep is not None and not isinstance(top_Rep, int):
+        raise ValueError('The top_Rep argument must be an int or None.')
+
+    if not isinstance(data, Series):
+        try:
+            data = Series(data)
+        except ValueError:
+            print('\nДанные должны быть представлены в виде numpy Ndarray или pandas Series.')
+
+    dup = data.loc[data.duplicated(keep=False)]
+    dup_count = dup.value_counts()
+
+    dup_count.index.names = ['Entries']
+    dup_count.name = 'Count'
+
+    if verbose:
+        print(f'\nНайдено {len(dup_count)} дублированных записей.\n'
+                    f'Записи с {top_Rep} наибольшим количеством повторений:')
+        print(dup_count.head(top_Rep))
+
+    return dup_count
+
+
+def second_order(data, test, decimals=2, sign='all', verbose=True, MAD=False,
+                 confidence=None, high_Z='pos', limit_N=None, MSE=False,
+                 show_plot=True, save_plot=None, save_plot_kwargs=None, inform=None):
+    """Performs the chosen test after subtracting the ordered sequence by itself.
+    Hence Second Order.
+
+    Args:
+        data: sequence of numbers to be evaluated. Must be a numpy 1D array,
+            a pandas Series or a pandas DataFrame column, with values being
+            integers or floats.
+        test: the test to be performed - 1 or 'F1D': First Digit; 2 or 'F2D':
+            First Two Digits; 3 or 'F3D': First three Digits; 22 or 'SD':
+            Second Digits; -2 or 'L2D': Last Two Digits.
+        decimals: number of decimal places to consider. Defaluts to 2.
+            If integers, set to 0. If set to -infer-, it will remove the zeros
+            and consider up to the fifth decimal place to the right, but will
+            loose performance.
+        sign: tells which portion of the data to consider. pos: only the positive
+            entries; neg: only negative entries; all: all entries but zeros.
+            Defaults to all.
+        verbose (bool): tells the number of registries that are being subjected to
+            the analysis and returns tha analysis DataFrame sorted by the
+            highest Z score down. Defaults to True.
+        MAD (bool): calculates the Mean Absolute Difference between the
+            found and the expected distributions; defaults to False.
+        confidence (int, float): confidence level to draw lower and upper limits when
+            plotting and to limit the top deviations to show. Defaults to None.
+        high_Z (int): chooses which Z scores to be used when displaying results,
+            according to the confidence level chosen. Defaluts to 'pos',
+            which will highlight only values higher than the expexted
+            frequencies; 'all' will highlight both extremes (positive and
+            negative); and an integer, which will use the first n entries,
+            positive and negative, regardless of whether Z is higher than
+            the confidence or not.
+        limit_N (int): sets a limit to N as the sample size for the calculation of
+            the Z scores if the sample is too big. Defaults to None.
+        MSE (bool): calculates the Mean Square Error of the sample; defaults to
+            False.
+        chi_square: calculates the chi_square statistic of the sample and
+            compares it with a critical value, according to the confidence
+            level chosen and the series's degrees of freedom. Defaults to
+            False. Requires confidence != None.
+        KS: calculates the Kolmogorov-Smirnov test, comparing the cumulative
+            distribution of the sample with the Benford's, according to the
+            confidence level chosen. Defaults to False. Requires confidence
+            != None.
+        show_plot (bool): draws the test plot.
+        save_plot (str): string with the path/name of the file in which the generated
+            plot will be saved. Uses matplotlib.pyplot.savefig(). File format
+            is infered by the file name extension. Only available when
+            plot=True.
+        save_plot_kwargs (dict): any of the kwargs accepted by
+            matplotlib.pyplot.savefig()
+            https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html
+            Only available when plot=True and save_plot is a string with the
+            figure file path/name.
+    
+    Returns:
+        DataFrame of the test chosen, but applied on Second Order pre-
+            processed data.
+    """
+    test = _check_test_(test)
+
+    verbose = _deprecate_inform_(verbose, inform)
+
+    data = Source(data, decimals=decimals, sign=sign,
+                  sec_order=True, verbose=verbose)
+    if test in [1, 2, 3]:
+        data.first_digits(digs=test, MAD=MAD,
+                          confidence=confidence, high_Z=high_Z,
+                          limit_N=limit_N, MSE=MSE, show_plot=show_plot,
+                          save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    elif test == 22:
+        data.second_digit(MAD=MAD, confidence=confidence, high_Z=high_Z,
+                          limit_N=limit_N, MSE=MSE, show_plot=show_plot,
+                          save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    else:
+        data.last_two_digits(MAD=MAD, confidence=confidence, high_Z=high_Z,
+                             limit_N=limit_N, MSE=MSE, show_plot=show_plot,
+                             save_plot=save_plot, save_plot_kwargs=save_plot_kwargs)
+    return data
