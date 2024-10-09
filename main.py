@@ -10,6 +10,7 @@ OSV = pd.read_excel('ОСВ Дубнадорстрой.xlsx').round(decimals=2).
 
 df.head(5)
 
+
 # Тест целостности данных
 
 names = '000, 001, 002, 003, 003.01, 003.02, 004, 004.1, 004.02, 004.К, 005, 006, 007, 008, 008.1, 008.21, 009, 009.01, 009.21, 010, 011, 012, 012.01, 012.02, ГТД, КВ, МЦ, МЦ.02, МЦ.03, МЦ.04, НЕ, НЕ.01, НЕ.01.1, НЕ.01.9, НЕ.02, НЕ.02.1, НЕ.02.9, НЕ.03, НЕ.04, ОТ, ОТ.01, ОТ.02, ОТ.03, РВ, РВ.1, РВ.2, РВ.3, РВ.4, УСН, УСН.01, УСН.01, УСН.02, УСН.03, УСН.04, УСН.21, УСН.22, УСН.23, УСН.24, Я75, Я81.01, Я81, Я80, Я80.02, Я80.01, Я80.09, Я75.01, Я81.09, Я81.02, Я75.02, Я69.06.5, Я01.К, Я96, Я96.01'
@@ -330,5 +331,59 @@ import os
 os.remove(image_path)
 
 """## **6. Тест мантисс**"""
+
+import io
+import sys
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+
+# Выполняем команду, которая выводит результаты
+image_path_1 = 'plot_1.png'
+image_path_2 = 'plot_2.png'
+report_output = io.StringIO()
+sys.stdout = report_output
+
+# Закрываем все открытые фигуры
+plt.close('all')
+
+# Генерируем графики и текст
+mant = bf.mantissas(df['Сумма'])
+
+# Возвращаем стандартный вывод обратно
+sys.stdout = sys.__stdout__
+
+# Получаем содержимое вывода как строку
+report_text = report_output.getvalue()
+report_lines = [line.strip() for line in report_text.splitlines()]
+
+# Сохраняем все открытые графики по отдельности
+figures = [plt.figure(i) for i in plt.get_fignums()]
+
+# Сохраняем графики
+figures[0].savefig(image_path_1)
+figures[1].savefig(image_path_2)
+
+# Закрываем все открытые фигуры
+plt.close('all')
+
+# Записываем данные в Excel
+with pd.ExcelWriter('report_mantiss.xlsx', engine='xlsxwriter') as writer:
+    # Создаем лист для результатов анализа
+    worksheet_results = writer.book.add_worksheet('Тест Мантисс')
+
+    # Записываем очищенный полный отчет, разбивая строки по пробелам
+    for row_num, line in enumerate(report_lines):
+        columns = line.split()
+        for col_num, cell_value in enumerate(columns):
+            worksheet_results.write(row_num, col_num, cell_value)
+
+    # Вставляем графики в Excel
+    worksheet_results.insert_image('A12', image_path_1, {'x_scale': 0.5, 'y_scale': 0.5})
+    worksheet_results.insert_image('K1', image_path_2, {'x_scale': 0.5, 'y_scale': 0.5})
+
+# Удаляем временные файлы изображений, если они существуют
+os.remove(image_path_1)
+os.remove(image_path_2)
 
 """## **7. Связанные тесты**"""
