@@ -10,7 +10,6 @@ OSV = pd.read_excel('ОСВ Дубнадорстрой.xlsx').round(decimals=2).
 
 df.head(5)
 
-
 # Тест целостности данных
 
 names = '000, 001, 002, 003, 003.01, 003.02, 004, 004.1, 004.02, 004.К, 005, 006, 007, 008, 008.1, 008.21, 009, 009.01, 009.21, 010, 011, 012, 012.01, 012.02, ГТД, КВ, МЦ, МЦ.02, МЦ.03, МЦ.04, НЕ, НЕ.01, НЕ.01.1, НЕ.01.9, НЕ.02, НЕ.02.1, НЕ.02.9, НЕ.03, НЕ.04, ОТ, ОТ.01, ОТ.02, ОТ.03, РВ, РВ.1, РВ.2, РВ.3, РВ.4, УСН, УСН.01, УСН.01, УСН.02, УСН.03, УСН.04, УСН.21, УСН.22, УСН.23, УСН.24, Я75, Я81.01, Я81, Я80, Я80.02, Я80.01, Я80.09, Я75.01, Я81.09, Я81.02, Я75.02, Я69.06.5, Я01.К, Я96, Я96.01'
@@ -225,6 +224,61 @@ print(f'Отчет сохранен в файле: {output_path}')
 
 """## **3. Тест первой, второй и 1и2 цифры**"""
 
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.drawing.image import Image
+import io
+import sys
+
+file_name = 'benford_reports_with_plots.xlsx'
+
+with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
+    for name, test in [('F1D', benf.F1D), ('SD', benf.SD), ('F2D', benf.F2D)]:
+        output_buffer = io.StringIO()
+
+        sys.stdout = output_buffer
+
+        report_data = test.report(show_plot=False)
+
+        sys.stdout = sys.__stdout__
+
+        captured_output = output_buffer.getvalue()
+        output_buffer.close()
+
+        # Преобразование вывода в DataFrame
+        output_df = pd.DataFrame([line] for line in captured_output.splitlines())
+        output_df.to_excel(writer, sheet_name=f'{name} Report', header=False, index=False, startrow=0)
+
+        if report_data is not None:
+            if isinstance(report_data, pd.DataFrame):
+                report_data.to_excel(writer, sheet_name=f'{name} Report', index=True, startrow=len(output_df) + 2)
+
+# Открытие книги Excel для добавления изображений
+workbook = load_workbook(file_name)
+
+for name in ['F1D', 'SD', 'F2D']:
+    plot_file = f'{name}_plot.png'
+    test = getattr(benf, name)
+    test.report(show_plot=True, save_plot=plot_file)  # Сохранение графика в файл
+
+    worksheet = workbook[f'{name} Report']
+    img = Image(plot_file)
+
+    # Настройка размера изображения (уменьшение до 50% от оригинального)
+    img.width = img.width // 2
+    img.height = img.height // 2
+
+    # Определение позиции изображения (правее таблицы)
+    max_column = worksheet.max_column  # Находим последнюю колонку с данными
+    image_column = max_column + 2      # Смещаемся на 2 колонки вправо
+
+    # Добавляем изображение в нужную позицию
+    worksheet.add_image(img, f'{chr(65 + image_column)}5')  # Столбец A + image_column
+
+# Сохранение изменений в файле
+workbook.save(file_name)
+
+print(f"Отчеты, таблицы и графики успешно сохранены в файл {file_name}")
 
 
 """## **4. Тест суммирования**"""
