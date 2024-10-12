@@ -253,6 +253,7 @@ with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
             if isinstance(report_data, pd.DataFrame):
                 report_data.to_excel(writer, sheet_name=f'{name} Report', index=True, startrow=len(output_df) + 2)
 
+
 # Открытие книги Excel для добавления изображений
 workbook = load_workbook(file_name)
 
