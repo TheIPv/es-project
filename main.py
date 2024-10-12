@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 df = pd.read_excel('ЖО Дубнадорстрой.xlsx',converters={'Счет Кт': str, 'Счет Дт': str})
 OSV = pd.read_excel('ОСВ Дубнадорстрой.xlsx').round(decimals=2).set_index('Счет')
-
+df_for_results = df
 df.head(5)
 
 # Тест целостности данных
@@ -332,3 +332,920 @@ os.remove(image_path)
 """## **6. Тест мантисс**"""
 
 """## **7. Связанные тесты**"""
+
+
+
+"""Кластеризация. Этап 1"""
+import math
+from datetime import datetime
+# Вероятность появления цифры в первом разряде
+
+def p_first(d1):
+    return math.log10(1 + 1 / d1)
+
+
+# Вероятность появления цифры во втором разряде
+
+def p_second(d2):
+    s = 0
+    for k in range(1, 10):
+        s += math.log10(1 + 1 / (10 * k + d2))
+    return s
+
+
+# Список, содержащий вероятности появления цифр 1-9 в первом #разряде
+
+first_teor = [p_first(d1) for d1 in range(1, 10)]
+df_duplicates = df.groupby(["СчетДт", "СчетКт", "Сумма"], as_index=False).count().sort_values(by="Организация",
+                                                                                              ascending=False)
+
+df.loc[:, 'first'] = df['Сумма'].apply(lambda x: int(str(x)[0]))
+
+# Список, содержащий частоты появления первых цифр в выборке
+
+first_real = df.groupby('first')['Сумма'].count() / len(df)
+
+
+# Расчет среднего абсолютного отклонения
+
+def MAD(AP, EP, k):
+    s = 0
+    for i in range(0, k - 1):
+        s += abs(AP[i] - EP[i])
+    return s / k
+
+
+mad = MAD(list(first_real), first_teor, 9)
+
+
+# Z-статистика
+
+def z_stat(AP, EP, N):
+    chisl = abs(AP - EP)
+    znam = ((EP * (1 - EP)) / N) ** 0.5
+    if 1 / (2 * N) < chisl:
+        chisl -= 1 / (2 * N)
+    return chisl / znam
+
+
+# Z-Тест 1 цифры
+
+z_stats = []
+for i in range(9):
+    z_stats.append(z_stat(list(first_real)[i], first_teor[i], len(df)))
+
+
+# Расчет хи-квадрат
+
+def chi2(AC, EC, N):
+    k = len(AC)
+    chi = 0
+    for i in range(k):
+        chi += (AC[i] * N - EC[i] * N) ** 2 / EC[i] * N
+    return chi
+
+
+chi_stat = chi2(list(first_real), first_teor, len(df))
+
+# Добавление в исходный датафрейм столбца со значениями z-#статистик
+
+df_first_stats = pd.DataFrame({"first": list(range(1, 10)), "z-stat first": z_stats})
+df = df.merge(df_first_stats, on='first')
+
+# Z-Тест 2 цифры
+
+df.loc[:, 'second'] = df['Сумма'].apply(lambda x: int(str(x)[1]))
+
+second_real = df.groupby('second')['Сумма'].count() / len(df)
+
+second_teor = [p_second(d1) for d1 in range(0, 10)]
+
+z_stat_sec = []
+for i in range(10):
+    z_stat_sec.append(z_stat(list(second_real)[i], second_teor[i], len(df)))
+
+df_second_stats = pd.DataFrame({"second": list(range(0, 10)), "z-stat second": z_stat_sec})
+df = df.merge(df_second_stats, on='second')
+
+# Тест первых двух цифр
+
+df.loc[:, 'first_two'] = df['Сумма'].apply(lambda x: int(str(x)[:2]))
+
+two_teor = [p_first(d1) for d1 in range(10, 100)]
+two_real = df.groupby('first_two')['Сумма'].count() / len(df)
+
+z_stat_two = []
+for i in range(90):
+    z_stat_two.append(z_stat(list(two_real)[i], two_teor[i], len(df)))
+
+df_first_two_stats = pd.DataFrame({"first_two": list(range(10, 100)), "z-stat first_two": z_stat_two})
+df = df.merge(df_first_two_stats, on='first_two')
+
+# Тест суммирования
+
+two_real = df.groupby('first_two')['Сумма'].sum() / df['Сумма'].sum()
+
+df_abs_delta = pd.DataFrame({"first_two": list(range(10, 100)), "sum_frequency": list(two_real)})
+df = df.merge(df_abs_delta, on='first_two')
+
+# Тест второго порядка
+
+df_cur = df.sort_values(by='Сумма')
+df_cur.loc[:, 'two'] = df_cur['Сумма'].diff() * 10
+df_cur.dropna(subset=['Сумма'], inplace=True)
+df_cur = df_cur[df_cur['two'] > 10]
+df_cur.loc[:, 'two'] = df_cur['two'].apply(lambda x: int(str(x)[:2]))
+df_cur.shape
+
+df_z_stat_second_diff = pd.DataFrame({"two": list(range(10, 100)), "z_stat_second_diff": z_stat_two})
+
+df_cur.head()
+
+df_cur = df_cur.merge(df_z_stat_second_diff, on="two")
+
+ind = df_cur.index
+df.loc[ind, "z_stat_second_diff"] = df_cur["z_stat_second_diff"]
+
+# Z-Тест последних двух цифр
+
+df_cur = df
+
+df_cur.loc[:, 'last_two'] = df_cur['Сумма'].apply(lambda x: int(str(int(round((x * 100), 0)))[-2:]))
+
+two_real = df_cur.groupby('last_two')['Сумма'].count() / len(df_cur)
+
+two_teor = [0.01 for i in range(100)]
+
+z_stats = []
+for i in range(100):
+    z_stats.append(z_stat(list(two_real)[i], two_teor[i], len(df_cur)))
+
+mad = MAD(list(two_real), two_teor, 100)
+
+df_last_two = pd.DataFrame({"last_two": list(range(0, 100)), "z_stat_last_two": z_stats})
+df_cur = df_cur.merge(df_last_two, on='last_two')
+
+
+def a_socr(a):
+    return 10 * a / (10 ** int(math.log(a, 10)))
+
+
+df_cur['two'] = df_cur['Сумма'].apply(lambda x: a_socr(x))
+
+# Добавляется столбец с частотой счета Дт (синтетический счет)
+
+df_cur["СинтСчетДт"] = df_cur["СчетДт"].apply(lambda x: str(x)[:2])
+df_dt = (df_cur.groupby("СинтСчетДт").count() / len(df_cur))
+df_dt = df_dt.rename(columns={"Организация": "Частота счета Дт"})
+df_dt = df_dt["Частота счета Дт"]
+df_cur = df_cur.merge(df_dt, on='СинтСчетДт')
+
+# Добавляется столбец с частотой счета Кт (синтетический счет)
+
+df_cur["СинтСчетКт"] = df_cur["СчетКт"].apply(lambda x: str(x)[:2])
+df_kt = (df_cur.groupby("СинтСчетКт").count() / len(df_cur))
+df_kt = df_kt.rename(columns={"Организация": "Частота счета Кт"})
+df_kt = df_kt["Частота счета Кт"]
+df_cur = df_cur.merge(df_kt, on='СинтСчетКт')
+
+# Добавляется столбец с частотой проводки (по синтетическим счетам)
+
+df_cur["Проводка"] = df_cur["СинтСчетДт"] + "-" + df_cur["СинтСчетКт"]
+df_pr = (df_cur.groupby("Проводка").count() / len(df_cur))
+df_pr = df_pr.rename(columns={"Организация": "Частота проводки"})
+df_pr = df_pr["Частота проводки"]
+df_cur = df_cur.merge(df_pr, on="Проводка")
+
+# Добавляется столбец с частотой автора операции
+
+df_au = df_cur.groupby("АвторОперации").count() / len(df_cur)
+df_au = df_au.rename(columns={"Организация": "Частота автора операции"})
+df_au = df_au["Частота автора операции"]
+df_cur = df_cur.merge(df_au, on='АвторОперации')
+
+# Ручная проводка (1) или нет (0)
+
+df_cur["Ручная проводка"] = df_cur["РучнаяКорректировка"].apply(lambda x: 1 if x == "Да" else 0)
+
+# выходные дни (1), другие дни (0)
+
+df_cur["Data"] = df_cur["Период"].apply(lambda x: str(x)[:10])
+df_cur["Data"] = df_cur["Data"].apply(lambda x: datetime.strptime(x, "%Y-%m-%d"))
+df_cur["Data"] = df_cur["Data"].apply(lambda x: datetime.weekday(x))
+df_cur["Data"] = df_cur["Data"].apply(lambda x: 1 if (x == 5 or x == 6) else 0)
+df_cur = df_cur.rename(columns={"Data": "Выходные или рабочие"})
+
+# Считает количество дублирующихся проводок
+
+df_duplicates_ = df_duplicates.iloc[:, :4]
+df_duplicates_.rename({"Организация": "Количество дублей"}, axis=1, inplace=True)
+df_cur = df_cur.merge(df_duplicates_, on=["СчетДт", "СчетКт", "Сумма"])
+
+temp = df_cur.loc[:,
+       ["z-stat first", "z-stat second", "z-stat first_two", "sum_frequency", "z_stat_second_diff", "z_stat_last_two",
+        "Частота суммы", "Частота счета Дт", "Частота счета Кт", "Частота проводки", "Частота автора операции",
+        "Ручная проводка", "Выходные или рабочие", "Сторно", "Количество дублей"]]
+
+temp.loc[temp["z_stat_second_diff"].isna(), "z_stat_second_diff"] = -1
+
+# Считает количество дублирующихся проводок
+df_duplicates_ = df_duplicates.iloc[:, :4]
+df_duplicates_.rename({"Организация": "Количество дублей"}, axis=1, inplace=True)
+df_cur = df_cur.merge(df_duplicates_, on=["СчетДт", "СчетКт", "Сумма"])
+
+temp.head()
+
+from sklearn.preprocessing import StandardScaler
+
+scaled = StandardScaler().fit_transform(temp.iloc[:, :6].values)
+scaled_df = pd.DataFrame(scaled, index=temp.iloc[:, :6].index, columns=temp.iloc[:, :6].columns)
+scaled_df.head()
+plt.close('all')  # Закрывает все открытые графики
+
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from sklearn.cluster import KMeans
+import sklearn.metrics as metrics
+
+# Настройки для графиков
+plt.rcParams["figure.figsize"] = (8, 4)
+
+# Список возможных значений кластеров
+x = [i for i in range(2, 6)]
+m = []
+
+sample_size = int(0.2 * scaled_df.shape[0])
+print(f'sample size = {sample_size}')
+
+# Подсчёт silhouette_score для каждого количества кластеров
+for i in tqdm(x):
+    labels = KMeans(n_clusters=i, random_state=1000).fit(scaled_df).labels_
+    m.append(metrics.silhouette_score(scaled_df, labels, sample_size=sample_size))
+
+# Найдём количество кластеров с максимальным значением silhouette_score
+best_n_clusters = x[m.index(max(m))]
+
+print(f'Оптимальное количество кластеров: {best_n_clusters}')
+
+# Строим график зависимости silhouette_score от количества кластеров
+plt.plot(x, m, 'r-')
+plt.xticks(ticks=x, labels=[int(i) for i in x])
+plt.xlabel('Количество кластеров')
+plt.ylabel('Значение метрики')
+plt.title('Зависимость значения метрики от количества кластеров')
+
+# Сохраняем график
+image_path = 'silhouette_plot.png'
+plt.savefig(image_path)
+plt.close('all')  # Закрывает все открытые графики
+
+
+# Экспорт данных в Excel
+excel_file = 'silhouette_report.xlsx'
+sheet_name = 'Силуэт'
+
+with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+    # Создаем лист для результатов анализа
+    worksheet_silhouette = writer.book.add_worksheet(sheet_name)
+
+    # Записываем строку с оптимальным числом кластеров
+    worksheet_silhouette.write(0, 0, f'Оптимальное количество кластеров: {best_n_clusters}')
+
+    # Записываем результаты анализа в Excel
+    worksheet_silhouette.write(2, 0, 'Количество кластеров')
+    worksheet_silhouette.write(2, 1, 'Silhouette Score')
+
+    for row_num, (n_clusters, score) in enumerate(zip(x, m), start=3):
+        worksheet_silhouette.write(row_num, 0, n_clusters)
+        worksheet_silhouette.write(row_num, 1, score)
+
+    # Вставляем график в Excel
+    worksheet_silhouette.insert_image('C1', image_path, {'x_scale': 1, 'y_scale': 1})
+
+    # Автовыравнивание ширины столбцов A и B
+    worksheet_silhouette.set_column(0, 0, max([len(str(n)) for n in x] + [len('Количество кластеров')]))
+    worksheet_silhouette.set_column(1, 1, max([len(f'{s:.3f}') for s in m] + [len('Silhouette Score')]))
+
+# Удаляем временные файлы изображений, если они существуют
+if os.path.exists(image_path):
+    os.remove(image_path)
+
+print(f"График силуэта и результаты анализа успешно сохранены в '{excel_file}'.")
+
+# Применение KMeans с оптимальным количеством кластеров
+if "Class" in scaled_df.columns:
+    scaled_df.drop(columns=["Class"], inplace=True)
+
+km = KMeans(n_clusters=best_n_clusters, random_state=1000)
+
+scaled_df["Class"] = km.fit_predict(scaled_df)
+scaled_df["Class"] = scaled_df["Class"] + 1
+
+grouped_count = scaled_df.groupby("Class").count()["z-stat first"]
+print(grouped_count)
+
+temp["Class"] = scaled_df["Class"]
+
+mean_temp = temp.groupby("Class").mean()
+# Построение графика
+scaled_df.groupby("Class").mean().T.plot(grid=True, figsize=(15, 10),  # Увеличиваем высоту графика
+                                         rot=90,
+                                         xticks=range(len(scaled_df.columns) - 1),
+                                         style='o-', linewidth=4, markersize=12)
+
+plt.legend(fontsize=30)
+plt.tick_params(axis='x', labelsize=14)
+plt.tick_params(axis='y', labelsize=10)  # Уменьшаем шрифт оси y
+plt.tight_layout()  # Подбираем отступы
+
+# Сохраняем график
+image_path_z_stats = 'z_stats.png'
+plt.savefig(image_path_z_stats)
+plt.close('all')  # Закрывает все открытые графики
+
+
+# Добавляем лист с результатами в существующий файл z_stats_report.xlsx
+sheet_name = 'Статистики'
+excel_file = 'z_stats_report.xlsx'
+with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+    # Создаем новый лист "Статистики"
+    worksheet_z_stats = writer.book.add_worksheet(sheet_name)
+
+    # Вставляем таблицу grouped_count в Excel
+    worksheet_z_stats.write(0, 0, 'Класс')
+    worksheet_z_stats.write(0, 1, 'Число объектов')
+
+    # Записываем данные таблицы grouped_count
+    row_num = 1
+    for class_label, count in grouped_count.items():
+        worksheet_z_stats.write(row_num, 0, class_label)
+        worksheet_z_stats.write(row_num, 1, count)
+        row_num += 1
+
+    # Вставляем таблицу mean_temp (начиная с того же row_num)
+    worksheet_z_stats.write(row_num, 0, 'Средние значения')
+    row_num += 1
+
+    # Записываем средние значения из таблицы mean_temp
+    for col_num, col_name in enumerate(mean_temp.columns):
+        worksheet_z_stats.write(row_num, col_num + 1, col_name)  # Заголовки столбцов
+    row_num += 1
+
+    for class_label, row in mean_temp.iterrows():
+        worksheet_z_stats.write(row_num, 0, class_label)  # Записываем номер класса
+        for col_num, value in enumerate(row):
+            worksheet_z_stats.write(row_num, col_num + 1, value)  # Записываем значения
+        row_num += 1
+
+    # Вставляем график в Excel (в ячейку D1)
+    worksheet_z_stats.insert_image('A8', image_path_z_stats, {'x_scale': 0.4, 'y_scale': 0.4})
+    # Устанавливаем автоподбор ширины для столбцов
+    worksheet_z_stats.set_column(0, 0, 15)  # Ширина для столбца 'Класс'
+    worksheet_z_stats.set_column(1, 1, 20)  # Ширина для столбца 'Число объектов'
+
+    # Устанавливаем ширину для столбцов таблицы mean_temp
+    for col_num in range(len(mean_temp.columns)):
+        worksheet_z_stats.set_column(col_num + 1, col_num + 1, 20)  # Ширина для средних значений
+
+# Удаляем временные файлы изображений, если они существуют
+if os.path.exists(image_path_z_stats):
+    os.remove(image_path_z_stats)
+
+print(f"Лист 'Статистики' добавлен к файлу '{excel_file}'. Файл готов для скачивания.")
+
+temp.groupby("Class").mean()
+
+# построение главных компонент
+
+from sklearn.decomposition import PCA
+
+pca = PCA(n_components=2)
+principalComponents = pca.fit_transform(scaled_df.iloc[:, :-1])
+principalDf = pd.DataFrame(data=principalComponents)
+
+principalDf = principalDf.rename(columns={0: "PC1", 1: "PC2"})
+principalDf["Class"] = scaled_df["Class"]
+
+principalDf.head()
+
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from sklearn.cluster import KMeans
+import sklearn.metrics as metrics
+
+# Визуализация главных компонент
+for i in range(1, best_n_clusters + 1):
+    data = principalDf[principalDf["Class"] == i]
+    plt.plot(data.PC1, data.PC2, 'o', label=f'Класс {i}')
+plt.legend()
+plt.title("Главные компоненты")
+plt.xlabel("Главная компонента 1")
+plt.ylabel("Главная компонента 2")
+
+# Сохраняем график
+image_path_pca = 'pca_plot.png'
+plt.savefig(image_path_pca)
+plt.close('all')  # Закрывает все открытые графики
+
+
+# Добавляем лист с результатами PCA в существующий файл clustering_report.xlsx
+sheet_name = 'Метод ГК'
+excel_file = 'PCA_report.xlsx'
+with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+    # Создаем новый лист "Метод ГК"
+    worksheet_pca = writer.book.add_worksheet(sheet_name)
+    # Вставляем график главных компонент в Excel
+    worksheet_pca.insert_image('A1', image_path_pca, {'x_scale': 1, 'y_scale': 1})
+
+# Удаляем временные файлы изображений, если они существуют
+if os.path.exists(image_path_pca):
+    os.remove(image_path_pca)
+
+print(f"Лист 'Метод ГК' добавлен к файлу '{excel_file}'. Файл готов для скачивания.")
+
+# Анализ выбросов
+
+from sklearn.ensemble import IsolationForest
+
+anomaly_labels = IsolationForest().fit_predict(scaled_df.drop(["Class"], axis=1))
+
+scaled_df["IsoLabels"] = anomaly_labels
+
+# Список для хранения отношений z-stat first
+ratios = {}
+
+# Получаем уникальные классы
+classes = scaled_df["Class"].unique()
+
+# Проходим по каждому классу и вычисляем отношение
+for cls in classes:
+    # Получаем count z-stat first для текущего класса
+    z_stat_pos = scaled_df[(scaled_df["Class"] == cls) & (scaled_df["IsoLabels"] == 1)]["z-stat first"].count()
+    z_stat_neg = scaled_df[(scaled_df["Class"] == cls) & (scaled_df["IsoLabels"] == -1)]["z-stat first"].count()
+
+    # Проверяем, чтобы z_stat_neg не было нулем
+    if z_stat_neg != 0:
+        ratio = z_stat_pos / z_stat_neg
+        ratios[cls] = ratio
+    else:
+        ratio = z_stat_pos
+        ratios[cls] = ratio
+
+# Находим класс с минимальным отношением
+if ratios:
+    anomaly_class_iso = min(ratios, key=ratios.get)  # Класс с минимальным отношением
+else:
+    anomaly_class_iso = None  # Если нет классов
+
+print(f'Аномальный класс по Isolation Forest: {anomaly_class_iso}')
+
+from sklearn.covariance import EllipticEnvelope
+
+anomaly_labels_el = EllipticEnvelope().fit_predict(scaled_df.drop(["Class", "IsoLabels"], axis=1))
+
+scaled_df["ElLabels"] = anomaly_labels_el
+scaled_df.groupby(["ElLabels", "IsoLabels", "Class"]).count()
+
+ratios_el = {}
+
+# Проходим по каждому классу и вычисляем отношение для Elliptic Envelope
+for cls in classes:
+    # Получаем count z-stat first для текущего класса
+    z_stat_pos = scaled_df[(scaled_df["Class"] == cls) & (scaled_df["ElLabels"] == 1)]["z-stat first"].count()
+    z_stat_neg = scaled_df[(scaled_df["Class"] == cls) & (scaled_df["ElLabels"] == -1)]["z-stat first"].count()
+
+    # Проверяем, чтобы z_stat_neg не было нулем
+    if z_stat_neg != 0:
+        ratio = z_stat_pos / z_stat_neg
+        ratios_el[cls] = ratio
+    else:
+        ratio = z_stat_pos
+        ratios_el[cls] = ratio
+
+# Находим аномальный класс для Elliptic Envelope
+if ratios_el:
+    anomaly_class_el = min(ratios_el, key=ratios_el.get)  # Класс с минимальным отношением
+else:
+    anomaly_class_el = None  # Если нет классов
+
+print(f'Аномальный класс по Elliptic Envelope: {anomaly_class_el}')
+
+import pandas as pd
+
+# Группируем данные и заполняем нулями
+grouped_iso = scaled_df.groupby(["IsoLabels", "Class"]).count().reindex(
+    pd.MultiIndex.from_product([[-1, 1], classes], names=["IsoLabels", "Class"]), fill_value=0
+)
+
+grouped_el = scaled_df.groupby(["ElLabels", "Class"]).count().reindex(
+    pd.MultiIndex.from_product([[-1, 1], classes], names=["ElLabels", "Class"]), fill_value=0
+)
+
+# Создаем новый Excel-файл
+excel_file = 'anomaly_report.xlsx'
+with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+    # Записываем результаты для Isolation Forest
+    worksheet_iso = writer.book.add_worksheet('Isolation Forest')
+    worksheet_iso.write(0, 0, 'IsoLabels')
+    worksheet_iso.write(0, 1, 'Класс')
+    worksheet_iso.write(0, 2, 'Число объектов')
+
+    # Записываем данные для IsoLabels
+    for row_num, (index, row) in enumerate(grouped_iso.iterrows(), start=1):
+        worksheet_iso.write(row_num, 0, index[0])  # IsoLabels
+        worksheet_iso.write(row_num, 1, index[1])  # Class
+        worksheet_iso.write(row_num, 2, row['z-stat first'])  # Count
+
+    # Добавляем информацию об аномальном классе по Isolation Forest
+    worksheet_iso.write(len(grouped_iso) + 2, 0, 'Аномальный класс по Isolation Forest:')
+    worksheet_iso.write(len(grouped_iso) + 2, 1, anomaly_class_iso)
+
+    # Добавляем разделитель между результатами
+    worksheet_iso.write(len(grouped_iso) + 4, 0, '-----')  # Разделитель
+    worksheet_iso.write(len(grouped_iso) + 5, 0, 'Elliptic Envelope')  # Заголовок для Elliptic Envelope
+
+    # Записываем результаты для Elliptic Envelope
+    worksheet_iso.write(len(grouped_iso) + 6, 0, 'ElLabels')
+    worksheet_iso.write(len(grouped_iso) + 6, 1, 'Класс')
+    worksheet_iso.write(len(grouped_iso) + 6, 2, 'Число объектов')
+
+    for row_num, (index, row) in enumerate(grouped_el.iterrows(), start=len(grouped_iso) + 7):
+        worksheet_iso.write(row_num, 0, index[0])  # ElLabels
+        worksheet_iso.write(row_num, 1, index[1])  # Class
+        worksheet_iso.write(row_num, 2, row['z-stat first'])  # Count
+
+    # Добавляем информацию об аномальном классе по Elliptic Envelope
+    worksheet_iso.write(len(grouped_iso) + len(grouped_el) + 7, 0, 'Аномальный класс по Elliptic Envelope:')
+    worksheet_iso.write(len(grouped_iso) + len(grouped_el) + 7, 1, anomaly_class_el)
+
+print(f'Файл {excel_file} создан с аномальными классами для обоих методов.')
+
+scaled_df_temp = scaled_df.copy()
+scaled_df = scaled_df.drop(["ElLabels", "IsoLabels"], axis=1)
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import xlsxwriter
+import os
+
+# Путь к файлу Excel
+excel_file = 'anomaly_report_graphs.xlsx'
+
+# Создание графиков для каждого класса и сохранение в файлы PNG
+classes = scaled_df_temp["Class"].unique()
+image_files = []
+
+# Проходим по каждому классу и строим графики
+for cls in classes:
+    plt.figure(figsize=(15, 8))
+
+    # Основной график для среднего значения по классу
+    scaled_df_temp[scaled_df_temp["Class"] == cls].iloc[:, :-3].mean().T.plot(
+        style='o-', linewidth=4, markersize=12, label=f'Среднее по классу {cls}'
+    )
+
+    # График для IsoLabels=-1 и ElLabels=-1 для данного класса
+    scaled_df_temp[
+        (scaled_df_temp["Class"] == cls) &
+        (scaled_df_temp["IsoLabels"] == -1) &
+        (scaled_df_temp["ElLabels"] == -1)
+        ].iloc[:, :-3].mean().T.plot(
+        style='o--', linewidth=4, markersize=12, label=f'Аномалии по обоим методам (-1, -1)'
+    )
+
+    # График для IsoLabels=1 и ElLabels=1 для данного класса
+    scaled_df_temp[
+        (scaled_df_temp["Class"] == cls) &
+        (scaled_df_temp["IsoLabels"] == 1) &
+        (scaled_df_temp["ElLabels"] == 1)
+        ].iloc[:, :-3].mean().T.plot(
+        style='o--', linewidth=4, markersize=12, label=f'Нет аномалий по обоим методам (1, 1)'
+    )
+
+    # Настройки графика
+    plt.legend(fontsize=14)
+    plt.title(f'График для класса {cls}')
+    plt.xlabel('Показатели')
+    plt.ylabel('Значение')
+
+    # Добавление сетки
+    plt.grid(True, linestyle='--', linewidth=0.5)  # Настройки сетки
+
+    # Сохранение графика в PNG
+    image_file = f'class_{cls}_plot.png'
+    plt.savefig(image_file)
+    image_files.append(image_file)
+    plt.close('all')  # Закрывает все открытые графики
+
+
+# Создание файла Excel с помощью xlsxwriter
+with xlsxwriter.Workbook(excel_file) as workbook:
+    worksheet = workbook.add_worksheet('Графики')
+
+    # Координаты для вставки графиков
+    start_row = 0
+
+    # Вставка всех графиков на один лист с уменьшением масштаба
+    for cls, image_file in zip(classes, image_files):
+        # Вставляем изображение графика на лист, уменьшая масштаб по осям
+        worksheet.insert_image(start_row, 0, image_file, {'x_scale': 0.5, 'y_scale': 0.5})
+
+        # Обновляем стартовую строку для следующего графика
+        start_row += 20  # Подбираем это значение в зависимости от высоты графиков
+
+# Удаляем временные файлы с графиками после вставки в Excel
+for image_file in image_files:
+    os.remove(image_file)
+
+print(f'Графики успешно сохранены в файл {excel_file}')
+
+scaled_df = scaled_df_temp[(scaled_df_temp["ElLabels"] == -1) & (scaled_df_temp["IsoLabels"] == -1) & (
+            scaled_df_temp["Class"] == anomaly_class_el)].iloc[:, :-2]
+
+scaled_df.head()
+
+# Получаем индексы аномальных объектов из scaled_df
+anomaly_indices_el = scaled_df[scaled_df["Class"] == anomaly_class_el].index
+
+# Фильтрация исходного DataFrame df по этим индексам
+anomaly_original_rows = df.loc[anomaly_indices_el]
+
+# Вывод
+anomaly_original_rows.head(10)
+
+# вывод всех аномальных строк изначального документа
+anomaly_original_rows.to_excel('anomaly_original_rows.xlsx', index=False)
+
+cluster_1_index = list(scaled_df[scaled_df["Class"] == anomaly_class_el].index)
+
+# df_cur[(df_cur.index.ster_1_isin(cluindex)) & (df_cur["ВидСубконтоДт1"] == "Контрагенты")].groupby("СубконтоДт1").count().sort_values(by="Сумма", ascending = False).head(10)
+
+df_class_1 = temp[(temp.index.isin(cluster_1_index))]
+
+temp_class_1 = df_class_1.loc[:,
+               ["z-stat first", "z-stat second", "z-stat first_two", "sum_frequency", "z_stat_second_diff",
+                "Частота суммы", "Частота счета Дт", "Частота счета Кт", "Частота проводки", "Частота автора операции",
+                "Ручная проводка", "Выходные или рабочие", "Сторно", "Количество дублей"]]
+
+"""**3.2 Кластеризация, Этап 2**"""
+
+# стандартизация данных
+# проведем кластеризацию для объектов аномального класса по оставшимся признакам
+
+from sklearn.preprocessing import StandardScaler
+
+scaled_ = StandardScaler().fit_transform(temp_class_1.iloc[:, 6:].values)
+scaled_class_1 = pd.DataFrame(scaled_, index=temp_class_1.iloc[:, 6:].index, columns=temp_class_1.iloc[:, 6:].columns)
+scaled_class_1.head()
+
+# Силуэт
+plt.close('all')  # Закрывает все открытые графики
+
+plt.rcParams["figure.figsize"] = (8, 4)
+
+x = [i for i in range(2, 6)]
+m = []
+
+sample_size = int(scaled_class_1.shape[0])
+print(f'sample size = {sample_size}')
+for i in tqdm(x):
+    print(i)
+    labels = KMeans(n_clusters=i, random_state=1000).fit(scaled_class_1).labels_
+    print(labels)
+    m.append(metrics.silhouette_score(scaled_class_1, labels, sample_size=sample_size))
+    print(f'n = {i}, silhouette = {m[-1]}')
+# Найдём количество кластеров с максимальным значением silhouette_score
+best_n_clusters = x[m.index(max(m))]
+
+# Строим график зависимости silhouette_score от количества кластеров
+plt.plot(x, m, 'r-')
+plt.xticks(ticks=x, labels=[int(i) for i in x])
+plt.xlabel('Количество кластеров')
+plt.ylabel('Значение метрики')
+plt.title('Зависимость значения метрики от количества кластеров')
+
+# Сохраняем график
+image_path = 'clust2_silhouette_plot.png'
+plt.savefig(image_path)
+plt.close('all')  # Закрывает все открытые графики
+
+
+# Экспорт данных в Excel
+excel_file = 'silhouette_report_part2.xlsx'
+sheet_name = 'Силуэт'
+
+with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+    # Создаем лист для результатов анализа
+    worksheet_silhouette = writer.book.add_worksheet(sheet_name)
+
+    # Записываем строку с оптимальным числом кластеров
+    worksheet_silhouette.write(0, 0, f'Оптимальное количество кластеров: {best_n_clusters}')
+
+    # Записываем результаты анализа в Excel
+    worksheet_silhouette.write(2, 0, 'Количество кластеров')
+    worksheet_silhouette.write(2, 1, 'Silhouette Score')
+
+    for row_num, (n_clusters, score) in enumerate(zip(x, m), start=3):
+        worksheet_silhouette.write(row_num, 0, n_clusters)
+        worksheet_silhouette.write(row_num, 1, score)
+
+    # Вставляем график в Excel
+    worksheet_silhouette.insert_image('C1', image_path, {'x_scale': 1, 'y_scale': 1})
+
+    # Автовыравнивание ширины столбцов A и B
+    worksheet_silhouette.set_column(0, 0, max([len(str(n)) for n in x] + [len('Количество кластеров')]))
+    worksheet_silhouette.set_column(1, 1, max([len(f'{s:.3f}') for s in m] + [len('Silhouette Score')]))
+
+# Удаляем временные файлы изображений, если они существуют
+if os.path.exists(image_path):
+    os.remove(image_path)
+
+print(f"График силуэта и результаты анализа успешно сохранены в '{excel_file}'.")
+plt.close('all')  # Закрывает все открытые графики
+
+n_clusters = best_n_clusters
+if "Class" in scaled_class_1.columns:
+    scaled_class_1.drop(columns=["Class", ], inplace=True)
+km = KMeans(n_clusters=n_clusters, random_state=1000)
+scaled_class_1["Class"] = km.fit_predict(scaled_class_1)
+scaled_class_1["Class"] = scaled_class_1["Class"] + 1
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
+
+# Удаляем столбец "Class", если он уже есть
+if "Class" in scaled_class_1.columns:
+    scaled_class_1.drop(columns=["Class"], inplace=True)
+
+# Применение KMeans
+km = KMeans(n_clusters=n_clusters, random_state=1000)
+scaled_class_1["Class"] = km.fit_predict(scaled_class_1)
+scaled_class_1["Class"] = scaled_class_1["Class"] + 1  # Нумерация классов с 1
+
+# Вычисляем количество объектов в каждом классе
+class_counts = scaled_class_1.groupby("Class").count()["Сторно"]
+class_counts = class_counts.reset_index()  # Преобразуем индекс в столбец для удобного вывода
+
+# Переименовываем столбцы
+class_counts.columns = ['Класс', 'Количество объектов']
+
+# Рисуем график средних значений по каждому классу
+scaled_class_1.groupby("Class").mean().T.plot(grid=True, figsize=(15, 10), rot=90,
+                                              xticks=range(len(scaled_class_1.columns) - 1), style='o-', linewidth=4,
+                                              markersize=12)
+
+plt.legend(fontsize=30)
+plt.tick_params(axis='x', labelsize=18)
+plt.tick_params(axis='y', labelsize=18)
+
+# Сохраняем график во временный файл
+plt.savefig('cluster_plot.png', bbox_inches='tight')
+plt.close('all')  # Закрывает все открытые графики
+if os.path.exists(image_path):
+    os.remove(image_path)
+# Создаем или открываем файл Excel для сохранения
+excel_file = 'clustering_report_part2.xlsx'
+
+# Используем ExcelWriter для работы с xlsxwriter
+with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+    # Записываем данные по количеству объектов в каждом классе в Excel
+    class_counts.to_excel(writer, sheet_name='KMeans Clustering', startrow=0, index=False)  # index=False убирает индекс
+
+    # Доступ к объекту workbook и worksheet для вставки графика
+    workbook = writer.book
+    worksheet = writer.sheets['KMeans Clustering']
+
+    # Вставляем график ниже данных
+    worksheet.insert_image('A10', 'cluster_plot.png', {'x_scale': 0.7, 'y_scale': 0.7})
+
+print(f'Файл {excel_file} успешно создан с графиком и данными кластеров.')
+# Удаляем временные файлы изображений, если они существуют
+if os.path.exists(image_path):
+    os.remove(image_path)
+
+# Анализ выбросов
+
+from sklearn.ensemble import IsolationForest
+
+anomaly_labels = IsolationForest().fit_predict(scaled_class_1.drop(["Class"], axis=1))
+
+import pandas as pd
+
+scaled_class_1["IsoLabels"] = anomaly_labels
+
+# Список для хранения отношений Сторно
+ratios = {}
+
+# Определяем порядок классов
+class_order = sorted(scaled_class_1["Class"].unique())  # [1, 2, 3, 4, 5]
+
+# Проходим по каждому классу и вычисляем отношение
+for cls in class_order:
+    z_stat_pos = scaled_class_1[(scaled_class_1["Class"] == cls) & (scaled_class_1["IsoLabels"] == 1)]["Сторно"].count()
+    z_stat_neg = scaled_class_1[(scaled_class_1["Class"] == cls) & (scaled_class_1["IsoLabels"] == -1)][
+        "Сторно"].count()
+
+    if z_stat_neg != 0:
+        ratio = z_stat_pos / z_stat_neg
+        ratios[cls] = ratio
+    else:
+        ratio = z_stat_pos
+        ratios[cls] = ratio
+
+# Находим класс с минимальным отношением
+if ratios:
+    anomaly_class_iso = min(ratios, key=ratios.get)
+else:
+    anomaly_class_iso = None
+
+print(f'Аномальный класс по Isolation Forest: {anomaly_class_iso}')
+
+from sklearn.covariance import EllipticEnvelope
+
+anomaly_labels_el = EllipticEnvelope().fit_predict(scaled_class_1.drop(["Class", "IsoLabels"], axis=1))
+
+scaled_class_1["ElLabels"] = anomaly_labels_el
+
+ratios_el = {}
+
+for cls in class_order:
+    z_stat_pos = scaled_class_1[(scaled_class_1["Class"] == cls) & (scaled_class_1["ElLabels"] == 1)]["Сторно"].count()
+    z_stat_neg = scaled_class_1[(scaled_class_1["Class"] == cls) & (scaled_class_1["ElLabels"] == -1)]["Сторно"].count()
+
+    if z_stat_neg != 0:
+        ratio = z_stat_pos / z_stat_neg
+        ratios_el[cls] = ratio
+    else:
+        ratio = z_stat_pos
+        ratios_el[cls] = ratio
+
+if ratios_el:
+    anomaly_class_el = min(ratios_el, key=ratios_el.get)
+else:
+    anomaly_class_el = None
+
+print(f'Аномальный класс по Elliptic Envelope: {anomaly_class_el}')
+
+# Группируем данные и заполняем нулями, устанавливая порядок классов
+grouped_iso = scaled_class_1.groupby(["IsoLabels", "Class"]).count().reindex(
+    pd.MultiIndex.from_product([[-1, 1], class_order], names=["IsoLabels", "Class"]), fill_value=0
+)
+
+grouped_el = scaled_class_1.groupby(["ElLabels", "Class"]).count().reindex(
+    pd.MultiIndex.from_product([[-1, 1], class_order], names=["ElLabels", "Class"]), fill_value=0
+)
+
+# Создаем новый Excel-файл
+excel_file = 'anomaly_report_part2.xlsx'
+with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+    # Записываем результаты для Isolation Forest
+    worksheet_iso = writer.book.add_worksheet('Isolation Forest')
+    worksheet_iso.write(0, 0, 'IsoLabels')
+    worksheet_iso.write(0, 1, 'Класс')
+    worksheet_iso.write(0, 2, 'Число объектов')
+
+    for row_num, (index, row) in enumerate(grouped_iso.iterrows(), start=1):
+        worksheet_iso.write(row_num, 0, index[0])  # IsoLabels
+        worksheet_iso.write(row_num, 1, index[1])  # Class
+        worksheet_iso.write(row_num, 2, row['Сторно'])  # Count
+
+    # Добавляем информацию об аномальном классе по Isolation Forest
+    worksheet_iso.write(len(grouped_iso) + 2, 0, 'Аномальный класс по Isolation Forest:')
+    worksheet_iso.write(len(grouped_iso) + 2, 1, anomaly_class_iso)
+
+    # Добавляем разделитель между результатами
+    worksheet_iso.write(len(grouped_iso) + 4, 0, '-----')  # Разделитель
+    worksheet_iso.write(len(grouped_iso) + 5, 0, 'Elliptic Envelope')  # Заголовок для Elliptic Envelope
+
+    # Записываем результаты для Elliptic Envelope
+    worksheet_iso.write(len(grouped_iso) + 6, 0, 'ElLabels')
+    worksheet_iso.write(len(grouped_iso) + 6, 1, 'Класс')
+    worksheet_iso.write(len(grouped_iso) + 6, 2, 'Число объектов')
+
+    for row_num, (index, row) in enumerate(grouped_el.iterrows(), start=len(grouped_iso) + 7):
+        worksheet_iso.write(row_num, 0, index[0])  # ElLabels
+        worksheet_iso.write(row_num, 1, index[1])  # Class
+        worksheet_iso.write(row_num, 2, row['Сторно'])  # Count
+
+    # Добавляем информацию об аномальном классе по Elliptic Envelope
+    worksheet_iso.write(len(grouped_iso) + len(grouped_el) + 7, 0, 'Аномальный класс по Elliptic Envelope:')
+    worksheet_iso.write(len(grouped_iso) + len(grouped_el) + 7, 1, anomaly_class_el)
+
+print(f'Файл {excel_file} создан с аномальными классами для обоих методов.')
+plt.close('all')
+# Получаем индексы аномальных объектов из scaled_class_1
+anomaly_indices_el = scaled_class_1[scaled_class_1["Class"] == anomaly_class_el].index
+
+# Фильтрация исходного DataFrame df по этим индексам
+anomaly_original_rows = df.loc[anomaly_indices_el]
+
+# Вывод
+anomaly_original_rows.head(10)
+
+# вывод всех аномальных строк изначального документа
+anomaly_original_rows.to_excel('anomaly_original_rows_part2.xlsx', index=False)
