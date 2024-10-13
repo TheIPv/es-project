@@ -442,8 +442,216 @@ os.remove(image_path_2)
 
 """## **7. Связанные тесты**"""
 
+"# 7.1 Тест дублирования cумм"
+temp = df.groupby('Сумма')['Сумма'].count()/len(df)
+sum_ = list(temp.index)
+frequency = list(temp)
+df_temp = pd.DataFrame({"Сумма": sum_, "Частота суммы": frequency})
+
+df = df.merge(df_temp, on = 'Сумма')
+
+most_frequent_values = df['Сумма'].value_counts().head(10)
+
+sorted_counts = most_frequent_values.sort_values(ascending=False)
+
+bar_width = 0.5  # Увеличиваем ширину столбцов
+bar_positions = [i + bar_width / 2 for i in range(len(sorted_counts))]  # Смещаем позиции столбцов
+
+# Построение графика
+fig, ax = plt.subplots(figsize=(10, 6))  # Используем fig и ax для сохранения фигуры
+ax.bar(bar_positions, sorted_counts.values, width=bar_width, align='center', color=(0/255, 121/255, 140/255))
+ax.set_xlabel('Значения')
+ax.set_ylabel('Частота')
+ax.set_title('Тест дублирования сумм')
+ax.set_xticks(bar_positions)
+ax.set_xticklabels(sorted_counts.index, rotation=45)
+
+# Добавляем проверку данных и настраиваем границы осей
+ax.set_xlim([min(bar_positions) - bar_width, max(bar_positions) + bar_width])
+ax.set_ylim([0, max(sorted_counts.values) * 1.1])  # Увеличиваем верхнюю границу на 10% для видимости
+
+plt.tight_layout()
+
+# Сохраняем график
+image_path = 'plot.png'
+fig.savefig(image_path)  # Сохраняем график через fig.savefig
+plt.close(fig)  # Закрываем конкретную фигуру
+
+# Запись в Excel
+with pd.ExcelWriter('report_connected_duplicate_amounts.xlsx', engine='xlsxwriter') as writer:
+    worksheet_results = writer.book.add_worksheet('Тест дублирования сумм')
+    worksheet_results.insert_image('A1', image_path)
+
+# Удаляем временный файл
+os.remove(image_path)
+
+"# 7.2 Тест двух последних цифр"
+
+import io
+import sys
+import pandas as pd
+import re
+
+# Перехватываем вывод команды benf.F2D_sec.report()
+benf.sec_order()
+
+# Создаем строковый буфер для перехвата вывода
+report_output = io.StringIO()
+sys.stdout = report_output
+
+# Выполняем команду, которая выводит результаты
+image_path = 'plot.png'
+benf.L2D.report(save_plot = image_path)
+
+# Возвращаем стандартный вывод обратно
+sys.stdout = sys.__stdout__
+
+# Получаем содержимое вывода как строку
+report_text = report_output.getvalue()
+
+# Парсим данные с помощью регулярных выражений для создания таблицы
+pattern = re.compile(r'(\d{1,2})\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)')
+parsed_data = pattern.findall(report_text)
+
+# Создаем списки для DataFrame с результатами
+first_two_digits = []
+expected = []
+found = []
+z_scores = []
+
+for entry in parsed_data:
+    first_two_digits.append(entry[0])
+    expected.append(float(entry[1]))
+    found.append(float(entry[2]))
+    z_scores.append(float(entry[3]))
+
+# Создаем DataFrame с четкими заголовками
+df_results = pd.DataFrame({
+    'Первые цифры': first_two_digits,
+    'Теор': expected,
+    'Факт': found,
+    'Z_статистика': z_scores
+})
+
+# Удаляем строки таблицы из полного текста отчета и дублирующиеся заголовки
+report_lines = [line.strip() for line in report_text.splitlines() if not pattern.match(line)]
+report_lines_cleaned = []
+skip_next = False
+
+for line in report_lines:
+    if "Теор" in line and "Факт" in line and "Z_статистика" in line:
+        if not skip_next:
+            skip_next = True
+            continue
+    if skip_next:
+        skip_next = False
+        continue
+    report_lines_cleaned.append(line)
+
+# Записываем данные в Excel
+with pd.ExcelWriter('report_connected_l2d.xlsx', engine='xlsxwriter') as writer:
+    # Создаем лист для результатов анализа
+    worksheet_results = writer.book.add_worksheet('тест двух последних цифр')
+
+    # Записываем очищенный полный отчет, разбивая строки по пробелам
+    for row_num, line in enumerate(report_lines_cleaned):
+        columns = line.split()
+        for col_num, cell_value in enumerate(columns):
+            worksheet_results.write(row_num, col_num, cell_value)
+
+    # Определяем начальную строку для вставки DataFrame
+    start_row = len(report_lines_cleaned) + 2  # Добавляем небольшой отступ
+
+    # Записываем DataFrame вниз под текстовым отчетом
+    for col_num, header in enumerate(df_results.columns):
+        worksheet_results.write(start_row, col_num, header)  # Записываем заголовки
+
+    for row_num, (digit, exp, found_val, z) in enumerate(zip(df_results['Первые цифры'], df_results['Теор'], df_results['Факт'], df_results['Z_статистика']), start=start_row + 1):
+        worksheet_results.write(row_num, 0, digit)  # First_2_Dig
+        worksheet_results.write(row_num, 1, exp)  # Expected
+        worksheet_results.write(row_num, 2, found_val)  # Found
+        worksheet_results.write(row_num, 3, z)  # Z_score
+
+    # Растягиваем ширину колонок
+    for col_num, _ in enumerate(df_results.columns):
+        max_width = max([len(str(value)) for value in df_results.iloc[:, col_num]] + [len(df_results.columns[col_num])])
+        worksheet_results.set_column(col_num, col_num, max_width + 2)  # Добавляем небольшой отступ
+
+
+    # Вставляем график в Excel со столбца K
+    worksheet_results.insert_image('K1', image_path, {'x_scale': 0.5, 'y_scale': 0.5})
+
+# Удаляем временный файл изображения
+import os
+os.remove(image_path)
+
+"# 7.3 Оценка коэффициента искажения"
+
+import pandas as pd
+import numpy as np
+
+# Расчет значений
+result = df.loc[df['Сумма'] >= 10]
+result.loc[result['Сумма'] != 0, ['Сумма']] = (10 * result['Сумма'] / (10 ** (np.log10(result['Сумма']).fillna(0)).astype(int)))
+
+Avg_Found = result['Сумма'].sum() / result['Сумма'].count()
+Avg_Expected = 90 / (result['Сумма'].count() * (10 ** (1 / result['Сумма'].count()) - 1))
+Distortion = (Avg_Found - Avg_Expected) / Avg_Expected * 100
+Std = result['Сумма'].std()
+Z_stat = Distortion / Std
+
+# Подготовка данных для записи в Excel
+data = {
+    'Показатель': [
+        'Среднее Факт', 'Среднее Теор', 'Коэффициент искажения', 'Z-статистика', 'Критическое значение', 'Вывод по значениям', 'Значимость искажения'
+    ],
+    'Значение': [
+        round(Avg_Found, 2), round(Avg_Expected, 2), f"{round(Distortion, 2)}%", round(Z_stat, 2), 2.57,
+        'Значения в массиве занижены' if Distortion < 0 else 'Значения в массиве завышены',
+        'Коэффициент искажения является существенным' if abs(Z_stat) > 2.57 else 'Коэффициент искажения является несущественным'
+    ]
+}
+
+df_output = pd.DataFrame(data)
+
+# Запись в файл Excel с настройками
+with pd.ExcelWriter('report_connected_distortion.xlsx', engine='xlsxwriter') as writer:
+    df_output.to_excel(writer, sheet_name='Анализ искажения', index=False, startrow=1)
+
+    # Доступ к workbook и worksheet
+    workbook = writer.book
+    worksheet = writer.sheets['Анализ искажения']
+
+    # Форматирование
+    center_format = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
+
+    # Установка ширины столбцов по максимальной длине значений
+    for i, col in enumerate(df_output.columns):
+        max_len = max(df_output[col].astype(str).map(len).max(), len(col)) + 2  # Добавляем небольшой отступ
+        worksheet.set_column(i, i, max_len, center_format)
+
+    # Добавление заголовка
+    worksheet.write(0, 0, 'Анализ искажения данных', workbook.add_format({'bold': True, 'align': 'center'}))
+    worksheet.merge_range(0, 0, 0, len(df_output.columns) - 1, 'Анализ искажения данных', center_format)
 
 """Кластеризация. Этап 1"""
+
+df = pd.read_excel('ЖО Дубнадорстрой.xlsx',converters={'Счет Кт': str, 'Счет Дт': str})
+OSV = pd.read_excel('ОСВ Дубнадорстрой.xlsx').round(decimals=2).set_index('Счет')
+df_for_results = df
+
+# Убираем строки с пустыми значениями поля Сумма
+df = df[df['Сумма'].notnull()]
+
+# Для отрицательных сумм меняем знак
+df.loc[df["Сумма"] < 0, "Сумма"] = -df["Сумма"]
+
+# Оставляем значения, больше 10, чтобы на них можно было провести все тесты
+df = df[df['Сумма'] > 10]
+
+# Меняем индексы
+df = df.reset_index(drop=True)
+
 import math
 from datetime import datetime
 # Вероятность появления цифры в первом разряде
@@ -1357,195 +1565,3 @@ anomaly_original_rows.head(10)
 
 # вывод всех аномальных строк изначального документа
 anomaly_original_rows.to_excel('anomaly_original_rows_part2.xlsx', index=False)
-=======
-"# 7.1 Тест дублирования cумм"
-temp = df.groupby('Сумма')['Сумма'].count()/len(df)
-sum_ = list(temp.index)
-frequency = list(temp)
-df_temp = pd.DataFrame({"Сумма": sum_, "Частота суммы": frequency})
-
-df = df.merge(df_temp, on = 'Сумма')
-
-most_frequent_values = df['Сумма'].value_counts().head(10)
-
-sorted_counts = most_frequent_values.sort_values(ascending=False)
-
-bar_width = 0.5  # Увеличиваем ширину столбцов
-bar_positions = [i + bar_width / 2 for i in range(len(sorted_counts))]  # Смещаем позиции столбцов
-
-# Построение графика
-fig, ax = plt.subplots(figsize=(10, 6))  # Используем fig и ax для сохранения фигуры
-ax.bar(bar_positions, sorted_counts.values, width=bar_width, align='center', color=(0/255, 121/255, 140/255))
-ax.set_xlabel('Значения')
-ax.set_ylabel('Частота')
-ax.set_title('Тест дублирования сумм')
-ax.set_xticks(bar_positions)
-ax.set_xticklabels(sorted_counts.index, rotation=45)
-
-# Добавляем проверку данных и настраиваем границы осей
-ax.set_xlim([min(bar_positions) - bar_width, max(bar_positions) + bar_width])
-ax.set_ylim([0, max(sorted_counts.values) * 1.1])  # Увеличиваем верхнюю границу на 10% для видимости
-
-plt.tight_layout()
-
-# Сохраняем график
-image_path = 'plot.png'
-fig.savefig(image_path)  # Сохраняем график через fig.savefig
-plt.close(fig)  # Закрываем конкретную фигуру
-
-# Запись в Excel
-with pd.ExcelWriter('report_connected_duplicate_amounts.xlsx', engine='xlsxwriter') as writer:
-    worksheet_results = writer.book.add_worksheet('Тест дублирования сумм')
-    worksheet_results.insert_image('A1', image_path)
-
-# Удаляем временный файл
-os.remove(image_path)
-
-"# 7.2 Тест двух последних цифр"
-
-import io
-import sys
-import pandas as pd
-import re
-
-# Перехватываем вывод команды benf.F2D_sec.report()
-benf.sec_order()
-
-# Создаем строковый буфер для перехвата вывода
-report_output = io.StringIO()
-sys.stdout = report_output
-
-# Выполняем команду, которая выводит результаты
-image_path = 'plot.png'
-benf.L2D.report(save_plot = image_path)
-
-# Возвращаем стандартный вывод обратно
-sys.stdout = sys.__stdout__
-
-# Получаем содержимое вывода как строку
-report_text = report_output.getvalue()
-
-# Парсим данные с помощью регулярных выражений для создания таблицы
-pattern = re.compile(r'(\d{1,2})\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)')
-parsed_data = pattern.findall(report_text)
-
-# Создаем списки для DataFrame с результатами
-first_two_digits = []
-expected = []
-found = []
-z_scores = []
-
-for entry in parsed_data:
-    first_two_digits.append(entry[0])
-    expected.append(float(entry[1]))
-    found.append(float(entry[2]))
-    z_scores.append(float(entry[3]))
-
-# Создаем DataFrame с четкими заголовками
-df_results = pd.DataFrame({
-    'Первые цифры': first_two_digits,
-    'Теор': expected,
-    'Факт': found,
-    'Z_статистика': z_scores
-})
-
-# Удаляем строки таблицы из полного текста отчета и дублирующиеся заголовки
-report_lines = [line.strip() for line in report_text.splitlines() if not pattern.match(line)]
-report_lines_cleaned = []
-skip_next = False
-
-for line in report_lines:
-    if "Теор" in line and "Факт" in line and "Z_статистика" in line:
-        if not skip_next:
-            skip_next = True
-            continue
-    if skip_next:
-        skip_next = False
-        continue
-    report_lines_cleaned.append(line)
-
-# Записываем данные в Excel
-with pd.ExcelWriter('report_connected_l2d.xlsx', engine='xlsxwriter') as writer:
-    # Создаем лист для результатов анализа
-    worksheet_results = writer.book.add_worksheet('тест двух последних цифр')
-
-    # Записываем очищенный полный отчет, разбивая строки по пробелам
-    for row_num, line in enumerate(report_lines_cleaned):
-        columns = line.split()
-        for col_num, cell_value in enumerate(columns):
-            worksheet_results.write(row_num, col_num, cell_value)
-
-    # Определяем начальную строку для вставки DataFrame
-    start_row = len(report_lines_cleaned) + 2  # Добавляем небольшой отступ
-
-    # Записываем DataFrame вниз под текстовым отчетом
-    for col_num, header in enumerate(df_results.columns):
-        worksheet_results.write(start_row, col_num, header)  # Записываем заголовки
-
-    for row_num, (digit, exp, found_val, z) in enumerate(zip(df_results['Первые цифры'], df_results['Теор'], df_results['Факт'], df_results['Z_статистика']), start=start_row + 1):
-        worksheet_results.write(row_num, 0, digit)  # First_2_Dig
-        worksheet_results.write(row_num, 1, exp)  # Expected
-        worksheet_results.write(row_num, 2, found_val)  # Found
-        worksheet_results.write(row_num, 3, z)  # Z_score
-
-    # Растягиваем ширину колонок
-    for col_num, _ in enumerate(df_results.columns):
-        max_width = max([len(str(value)) for value in df_results.iloc[:, col_num]] + [len(df_results.columns[col_num])])
-        worksheet_results.set_column(col_num, col_num, max_width + 2)  # Добавляем небольшой отступ
-
-
-    # Вставляем график в Excel со столбца K
-    worksheet_results.insert_image('K1', image_path, {'x_scale': 0.5, 'y_scale': 0.5})
-
-# Удаляем временный файл изображения
-import os
-os.remove(image_path)
-
-"# 7.3 Оценка коэффициента искажения"
-
-import pandas as pd
-import numpy as np
-
-# Расчет значений
-result = df.loc[df['Сумма'] >= 10]
-result.loc[result['Сумма'] != 0, ['Сумма']] = (10 * result['Сумма'] / (10 ** (np.log10(result['Сумма']).fillna(0)).astype(int)))
-
-Avg_Found = result['Сумма'].sum() / result['Сумма'].count()
-Avg_Expected = 90 / (result['Сумма'].count() * (10 ** (1 / result['Сумма'].count()) - 1))
-Distortion = (Avg_Found - Avg_Expected) / Avg_Expected * 100
-Std = result['Сумма'].std()
-Z_stat = Distortion / Std
-
-# Подготовка данных для записи в Excel
-data = {
-    'Показатель': [
-        'Среднее Факт', 'Среднее Теор', 'Коэффициент искажения', 'Z-статистика', 'Критическое значение', 'Вывод по значениям', 'Значимость искажения'
-    ],
-    'Значение': [
-        round(Avg_Found, 2), round(Avg_Expected, 2), f"{round(Distortion, 2)}%", round(Z_stat, 2), 2.57,
-        'Значения в массиве занижены' if Distortion < 0 else 'Значения в массиве завышены',
-        'Коэффициент искажения является существенным' if abs(Z_stat) > 2.57 else 'Коэффициент искажения является несущественным'
-    ]
-}
-
-df_output = pd.DataFrame(data)
-
-# Запись в файл Excel с настройками
-with pd.ExcelWriter('report_connected_distortion.xlsx', engine='xlsxwriter') as writer:
-    df_output.to_excel(writer, sheet_name='Анализ искажения', index=False, startrow=1)
-
-    # Доступ к workbook и worksheet
-    workbook = writer.book
-    worksheet = writer.sheets['Анализ искажения']
-
-    # Форматирование
-    center_format = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
-
-    # Установка ширины столбцов по максимальной длине значений
-    for i, col in enumerate(df_output.columns):
-        max_len = max(df_output[col].astype(str).map(len).max(), len(col)) + 2  # Добавляем небольшой отступ
-        worksheet.set_column(i, i, max_len, center_format)
-
-    # Добавление заголовка
-    worksheet.write(0, 0, 'Анализ искажения данных', workbook.add_format({'bold': True, 'align': 'center'}))
-    worksheet.merge_range(0, 0, 0, len(df_output.columns) - 1, 'Анализ искажения данных', center_format)
