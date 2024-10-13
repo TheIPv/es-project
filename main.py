@@ -88,7 +88,6 @@ df = df[df['Сумма'] > 10]
 
 # Меняем индексы
 df = df.reset_index(drop=True)
-
 """## **2.1 Базовые тесты**
 
 ### **2.1.1 Тест первой цифры**
@@ -133,7 +132,7 @@ frequency = list(temp)
 df_temp = pd.DataFrame({"Сумма": sum_, "Частота суммы": frequency})
 
 df = df.merge(df_temp, on = 'Сумма')
-
+test_overwrite = df
 most_frequent_values = df['Сумма'].value_counts().head(10)
 
 sorted_counts = most_frequent_values.sort_values(ascending=False)
@@ -449,7 +448,6 @@ frequency = list(temp)
 df_temp = pd.DataFrame({"Сумма": sum_, "Частота суммы": frequency})
 
 df = df.merge(df_temp, on = 'Сумма')
-
 most_frequent_values = df['Сумма'].value_counts().head(10)
 
 sorted_counts = most_frequent_values.sort_values(ascending=False)
@@ -636,22 +634,8 @@ with pd.ExcelWriter('report_connected_distortion.xlsx', engine='xlsxwriter') as 
 
 """Кластеризация. Этап 1"""
 
-df = pd.read_excel('ЖО Дубнадорстрой.xlsx',converters={'Счет Кт': str, 'Счет Дт': str})
-OSV = pd.read_excel('ОСВ Дубнадорстрой.xlsx').round(decimals=2).set_index('Счет')
-df_for_results = df
-
-# Убираем строки с пустыми значениями поля Сумма
-df = df[df['Сумма'].notnull()]
-
-# Для отрицательных сумм меняем знак
-df.loc[df["Сумма"] < 0, "Сумма"] = -df["Сумма"]
-
-# Оставляем значения, больше 10, чтобы на них можно было провести все тесты
-df = df[df['Сумма'] > 10]
-
-# Меняем индексы
-df = df.reset_index(drop=True)
-
+df = test_overwrite
+print(df)
 import math
 from datetime import datetime
 # Вероятность появления цифры в первом разряде
