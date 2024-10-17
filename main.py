@@ -1,6 +1,7 @@
 import os
 import datetime
 import tkinter as tk
+import threading
 from tkinter import filedialog, messagebox
 import pandas as pd
 import matplotlib
@@ -55,6 +56,10 @@ def load_second_file():
         update_log("Файлы загружены. Готово к анализу.")
         start_analysis_button.pack(pady=10)
 
+def analyze_data_thread():
+    analyze_data()
+def start_analysis():
+    threading.Thread(target=analyze_data_thread).start()
 
 # Функция для анализа данных
 def analyze_data():
@@ -1635,7 +1640,7 @@ def create_main_window():
     load_osv_button.config(state=tk.DISABLED)
 
     # Кнопка для начала анализа
-    start_analysis_button = tk.Button(window, text="Начать анализ", command=analyze_data, bg="#FFFFFF", fg="blue", font=button_font)
+    start_analysis_button = tk.Button(window, text="Начать анализ", command=start_analysis, bg="#FFFFFF", fg="blue", font=button_font)
     start_analysis_button.pack(pady=10, padx=10, fill='x')
     start_analysis_button.pack_forget()
 
