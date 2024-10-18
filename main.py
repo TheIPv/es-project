@@ -354,8 +354,90 @@ def analyze_data():
 
     print(f"Отчеты, таблицы и графики успешно сохранены в файл {file_name}")
 
-    """## **4. Тест суммирования**"""
+    """## **4. Тест суммирования** """
+    plt.close('all')  # Закрываем любые предыдущие фигуры
+    # Выполняем тест с сохранением графика
+    benf_summ = bf.Benford(df['Сумма'], decimals=2, confidence=99)
+    sm = bf.summation(df['Сумма'], decimals=2, verbose=True,
+                      show_plot=True)  # Установите show_plot=True, чтобы график отображался
 
+    # Генерируем график и сохраняем его
+
+    image_path = 'plot.png'
+    figures = [plt.figure(i) for i in plt.get_fignums()]
+
+    # Проверяем, что график был создан
+    if len(figures) > 0:
+        figures[0].savefig(image_path)  # Сохраняем первый график
+
+    # Преобразуем отчет в DataFrame
+    df_results = sm
+
+    # Получаем дополнительные данные
+    initial_size = len(benf_summ.chosen)  # Размер исходной выборки
+    tested_sample_size = len(benf_summ.base)  # Размер протестированной выборки
+
+    # Дополнительная информация для отчета
+    total_values = len(df['Сумма'])  # Общее количество значений
+    max_deviation = df_results['Абс_Разность'].max()  # Максимальное отклонение
+
+    # Открытие существующего файла Excel
+    if os.path.exists(file_name):
+        workbook = load_workbook(file_name)
+    else:
+        workbook = Workbook()
+
+    # Создаем новый лист для теста суммирования
+    sheet_name = 'Тест суммирования'
+    if sheet_name not in workbook.sheetnames:
+        worksheet_results = workbook.create_sheet(sheet_name)
+    else:
+        worksheet_results = workbook[sheet_name]
+
+    # Добавляем дополнительную информацию
+    worksheet_results.cell(row=1, column=1, value='Тест суммирования')  # Заголовок
+    worksheet_results.cell(row=2, column=1, value='Количество значений (всего)')
+    worksheet_results.cell(row=2, column=2, value=total_values)
+
+    worksheet_results.cell(row=3, column=1, value='Исходный размер выборки')
+    worksheet_results.cell(row=3, column=2, value=initial_size)
+
+    worksheet_results.cell(row=4, column=1, value='Размер протестированной выборки')
+    worksheet_results.cell(row=4, column=2, value=tested_sample_size)
+
+    worksheet_results.cell(row=5, column=1, value='Наибольшее отклонение')
+    worksheet_results.cell(row=5, column=2, value=max_deviation)
+
+    # Записываем DataFrame с результатами ниже (начиная с 7 строки)
+    start_row = 7
+    for col_num, header in enumerate(df_results.columns, start=1):
+        worksheet_results.cell(row=start_row, column=col_num, value=header)  # Заголовки
+
+    for row_num, row_data in enumerate(df_results.itertuples(index=False), start=start_row + 1):
+        for col_num, value in enumerate(row_data, start=1):
+            worksheet_results.cell(row=row_num, column=col_num, value=value)
+
+    # Вставляем сохраненный график в Excel на лист
+    if os.path.exists(image_path):  # Убедимся, что файл графика существует
+        img = Image(image_path)
+        img.width = img.width // 2  # Уменьшаем размер изображения
+        img.height = img.height // 2
+        worksheet_results.add_image(img, f'E1')  # Подкорректируйте позицию
+
+    # Сохраняем изменения в файл Excel
+    workbook.save(file_name)
+
+    # Выводим сообщение о завершении
+    print(f"Отчет и данные теста суммирования сохранены в файл {file_name}")
+
+    # Удаляем временный файл изображения
+    if os.path.exists(image_path):
+        os.remove(image_path)
+    else:
+        print(f"Временный файл {image_path} не найден.")
+
+    # Закрываем все открытые фигуры
+    plt.close('all')
     """## **5. Тест второго порядка**"""
     import os
     import io
