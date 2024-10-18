@@ -282,6 +282,55 @@ print(f"Отчеты, таблицы и графики успешно сохра
 
 
 """## **4. Тест суммирования**"""
+import pandas as pd
+import xlsxwriter
+import benford as bf
+
+# Выполняем тест с сохранением графика
+benf = bf.Benford(df['Сумма'], decimals=2, confidence=99)
+sm = bf.summation(df['Сумма'], decimals=2, verbose=True, show_plot=True, save_plot="/content/image.png")
+
+# Преобразуем отчет в DataFrame
+df_results = sm
+
+# Получаем дополнительные данные
+initial_size = len(benf.chosen)  # Размер исходной выборки
+tested_sample_size = len(benf.base)  # Размер протестированной выборки
+
+# Дополнительная информация для отчета
+total_values = len(df['Сумма'])  # Общее количество значений
+max_deviation = df_results['AbsDif'].max()  # Максимальное отклонение
+
+# Записываем данные в Excel
+with pd.ExcelWriter('summation_report_full.xlsx', engine='xlsxwriter') as writer:
+    # Создаем лист для результатов анализа
+    worksheet_results = writer.book.add_worksheet('Тест сумм')
+
+    # Добавляем дополнительную информацию
+    worksheet_results.write(0, 0, 'Тест суммирования')  # Заголовок
+    worksheet_results.write(1, 0, 'Количество значений (всего)')  # Описание
+    worksheet_results.write(1, 1, total_values)  # Общее количество значений
+
+    worksheet_results.write(2, 0, 'Исходный размер выборки')  # Описание
+    worksheet_results.write(2, 1, initial_size)  # Размер исходной выборки
+
+    worksheet_results.write(3, 0, 'Размер протестированной выборки')  # Описание
+    worksheet_results.write(3, 1, tested_sample_size)  # Размер протестированной выборки
+
+    worksheet_results.write(4, 0, 'Наибольшее отклонение')  # Описание
+    worksheet_results.write(4, 1, max_deviation)  # Максимальное отклонение
+
+    # Теперь записываем DataFrame с результатами ниже
+    df_results.to_excel(writer, sheet_name='Тест сумм', startrow=6, index=True)
+
+    # Получаем доступ к книге и листу
+    worksheet_results = writer.sheets['Тест сумм']
+
+    # Вставляем сохраненный график в Excel на лист
+    worksheet_results.insert_image('E30', "/content/image.png")  # Подкорректируйте позицию
+
+# Выводим сообщение о завершении
+print("Отчет, полный DataFrame, дополнительные данные и график сохранены в 'summation_report_full.xlsx'")
 
 """## **5. Тест второго порядка**"""
 
