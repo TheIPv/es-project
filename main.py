@@ -229,14 +229,11 @@ def analyze_data():
     else:
         print('Коэффициент искажения является несущественным')
 
-    # Оценка риска
+    """# **Оценка риска**
 
-    """# ------ [ ВЫГРУЗКА РЕЗУЛЬТАТОВ В EXCEL ] ------"""
-    from openpyxl import load_workbook, Workbook
-    from openpyxl.drawing.image import Image
-    # 1. Закон Бенфорда
-
-    update_log("Выгрузка законов Бенфорда...")
+    ## **2. Закон Бенфорда**
+    """
+    update_log("Выгрузка законов Бенфорта...")
     benf.summation()
 
     initial_size = len(benf.chosen)
@@ -251,65 +248,42 @@ def analyze_data():
     # Путь к папке для сохранения отчетов
     output_folder = create_output_folder()
     # Путь для сохранения Excel-файла
-    output_path = os.path.join(output_folder, 'Отчёт.xlsx')
+    output_path = os.path.join(output_folder, 'Тесты Бенфорта (F1D, F2D, F3D, SD, L2D).xlsx')
 
-    if os.path.exists(output_path):
-        workbook = load_workbook(output_path)
-    else:
-        workbook = Workbook()
+    # Запись данных в Excel
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        # Создание листа "Результаты тестов Бенфорда"
+        worksheet = writer.book.add_worksheet('Результаты тестов')
 
-    if 'Результаты тестов' in workbook.sheetnames:
-        worksheet = workbook['Результаты тестов']
-    else:
-        # Если такого листа нет, создаем новый
-        worksheet = workbook.create_sheet('Результаты тестов')
+        # Запись описания и значений
+        worksheet.write('A1', 'Исходный размер выборки')
+        worksheet.write('B1', initial_size)
 
-    # Записываем данные в существующий или новый лист
-    worksheet['A1'] = 'Исходный размер выборки'
-    worksheet['B1'] = len(benf.chosen)
+        worksheet.write('A2', 'Количество значений, на которых проведен тест')
+        worksheet.write('B2', tested_sample_size)
 
-    worksheet['A2'] = 'Количество значений, на которых проведен тест'
-    worksheet['B2'] = len(benf.base)
+        worksheet.write('A3', 'Исключенные значения для каждого теста')
+        worksheet.write('B3', data)
 
-    data = (
-        f"'F1D': {benf._discarded['F1D']}\n; "
-        f"'F2D': {benf._discarded['F2D']}\n; "
-        f"'F3D': {benf._discarded['F3D']}\n; "
-        f"'SD': {benf._discarded['SD']}\n; "
-        f"'L2D': {benf._discarded['L2D']};"
-    )
-    worksheet['A3'] = 'Исключенные значения для каждого теста'
-    worksheet['B3'] = data
-
-    workbook.save(output_path)
-
+    # Файл будет сохранен в вашем текущем каталоге
     print(f'Отчет сохранен в файле: {output_path}')
     update_log("Выгрузка тестов первой, второй и 1 и 2 цифры...")
-
     """## **3. Тест первой, второй и 1и2 цифры**"""
 
-    import os
     import pandas as pd
     from openpyxl import load_workbook
     from openpyxl.drawing.image import Image
     import io
     import sys
 
-    # Путь к файлу Excel
-    file_name = os.path.join(output_folder, 'Отчёт.xlsx')
+    file_name = os.path.join(output_folder, 'Тесты Бенфорта, графики (F1D, SD, F2D).xlsx')
 
-    # Запись данных в Excel
-    with pd.ExcelWriter(output_path, engine='openpyxl', mode='a' if os.path.exists(output_path) else 'w') as writer:
-        for name, test, sheet_title in [
-            ('F1D', benf.F1D, 'Тест первой цифры'),
-            ('SD', benf.SD, 'Тест второй цифры'),
-            ('F2D', benf.F2D, 'Тест 1 и 2 цифры')
-        ]:
+    with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
+        for name, test in [('F1D', benf.F1D), ('SD', benf.SD), ('F2D', benf.F2D)]:
             output_buffer = io.StringIO()
 
             sys.stdout = output_buffer
 
-            # Генерация отчета теста без отображения графика
             report_data = test.report(show_plot=False)
 
             sys.stdout = sys.__stdout__
@@ -319,23 +293,22 @@ def analyze_data():
 
             # Преобразование вывода в DataFrame
             output_df = pd.DataFrame([line] for line in captured_output.splitlines())
-            output_df.to_excel(writer, sheet_name=sheet_title, header=False, index=False, startrow=0)
+            output_df.to_excel(writer, sheet_name=f'{name} Report', header=False, index=False, startrow=0)
 
             if report_data is not None:
                 if isinstance(report_data, pd.DataFrame):
-                    report_data.to_excel(writer, sheet_name=sheet_title, index=True,
+                    report_data.to_excel(writer, sheet_name=f'{name} Report', index=True,
                                          startrow=len(output_df) + 2)
 
-    # Открытие существующего файла Excel для добавления изображений
+    # Открытие книги Excel для добавления изображений
     workbook = load_workbook(file_name)
 
-    # Добавление графиков к соответствующим листам
-    for name, sheet_title in [('F1D', 'Тест первой цифры'), ('SD', 'Тест второй цифры'), ('F2D', 'Тест 1 и 2 цифры')]:
+    for name in ['F1D', 'SD', 'F2D']:
         plot_file = f'{name}_plot.png'
         test = getattr(benf, name)
         test.report(show_plot=True, save_plot=plot_file)  # Сохранение графика в файл
 
-        worksheet = workbook[sheet_title]
+        worksheet = workbook[f'{name} Report']
         img = Image(plot_file)
 
         # Настройка размера изображения (уменьшение до 50% от оригинального)
@@ -349,109 +322,19 @@ def analyze_data():
         # Добавляем изображение в нужную позицию
         worksheet.add_image(img, f'{chr(65 + image_column)}5')  # Столбец A + image_column
 
-    # Сохранение изменений в файле Excel
+    # Сохранение изменений в файле
     workbook.save(file_name)
 
     print(f"Отчеты, таблицы и графики успешно сохранены в файл {file_name}")
 
-    """## **4. Тест суммирования** """
-    plt.close('all')  # Закрываем любые предыдущие фигуры
-    # Выполняем тест с сохранением графика
-    benf_summ = bf.Benford(df['Сумма'], decimals=2, confidence=99)
-    sm = bf.summation(df['Сумма'], decimals=2, verbose=True,
-                      show_plot=True)  # Установите show_plot=True, чтобы график отображался
+    """## **4. Тест суммирования**"""
 
-    # Генерируем график и сохраняем его
-
-    image_path = 'plot.png'
-    figures = [plt.figure(i) for i in plt.get_fignums()]
-
-    # Проверяем, что график был создан
-    if len(figures) > 0:
-        figures[0].savefig(image_path)  # Сохраняем первый график
-
-    # Преобразуем отчет в DataFrame
-    df_results = sm
-
-    # Получаем дополнительные данные
-    initial_size = len(benf_summ.chosen)  # Размер исходной выборки
-    tested_sample_size = len(benf_summ.base)  # Размер протестированной выборки
-
-    # Дополнительная информация для отчета
-    total_values = len(df['Сумма'])  # Общее количество значений
-    max_deviation = df_results['Абс_Разность'].max()  # Максимальное отклонение
-
-    # Открытие существующего файла Excel
-    if os.path.exists(file_name):
-        workbook = load_workbook(file_name)
-    else:
-        workbook = Workbook()
-
-    # Создаем новый лист для теста суммирования
-    sheet_name = 'Тест суммирования'
-    if sheet_name not in workbook.sheetnames:
-        worksheet_results = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_results = workbook[sheet_name]
-
-    # Добавляем дополнительную информацию
-    worksheet_results.cell(row=1, column=1, value='Тест суммирования')  # Заголовок
-    worksheet_results.cell(row=2, column=1, value='Количество значений (всего)')
-    worksheet_results.cell(row=2, column=2, value=total_values)
-
-    worksheet_results.cell(row=3, column=1, value='Исходный размер выборки')
-    worksheet_results.cell(row=3, column=2, value=initial_size)
-
-    worksheet_results.cell(row=4, column=1, value='Размер протестированной выборки')
-    worksheet_results.cell(row=4, column=2, value=tested_sample_size)
-
-    worksheet_results.cell(row=5, column=1, value='Наибольшее отклонение')
-    worksheet_results.cell(row=5, column=2, value=max_deviation)
-
-    # Записываем DataFrame с результатами ниже (начиная с 7 строки)
-    start_row = 7
-    for col_num, header in enumerate(df_results.columns, start=1):
-        worksheet_results.cell(row=start_row, column=col_num, value=header)  # Заголовки
-
-    for row_num, row_data in enumerate(df_results.itertuples(index=False), start=start_row + 1):
-        for col_num, value in enumerate(row_data, start=1):
-            worksheet_results.cell(row=row_num, column=col_num, value=value)
-
-    # Вставляем сохраненный график в Excel на лист
-    if os.path.exists(image_path):  # Убедимся, что файл графика существует
-        img = Image(image_path)
-        img.width = img.width // 2  # Уменьшаем размер изображения
-        img.height = img.height // 2
-        worksheet_results.add_image(img, f'E1')  # Подкорректируйте позицию
-
-    # Сохраняем изменения в файл Excel
-    workbook.save(file_name)
-
-    # Выводим сообщение о завершении
-    print(f"Отчет и данные теста суммирования сохранены в файл {file_name}")
-
-    # Удаляем временный файл изображения
-    if os.path.exists(image_path):
-        os.remove(image_path)
-    else:
-        print(f"Временный файл {image_path} не найден.")
-
-    # Закрываем все открытые фигуры
-    plt.close('all')
     """## **5. Тест второго порядка**"""
-    import os
+    update_log("Выгрузка теста второго порядка...")
     import io
     import sys
-    import re
     import pandas as pd
-    from openpyxl import load_workbook
-    from openpyxl.drawing.image import Image
-
-    # Путь к файлу
-    file_name = os.path.join(output_folder, 'Отчёт.xlsx')
-
-    # Выгрузка теста второго порядка
-    update_log("Выгрузка теста второго порядка...")
+    import re
 
     # Перехватываем вывод команды benf.F2D_sec.report()
     benf.sec_order()
@@ -509,65 +392,57 @@ def analyze_data():
             continue
         report_lines_cleaned.append(line)
 
-    # Открытие существующего файла Excel
-    if os.path.exists(file_name):
-        workbook = load_workbook(file_name)
-    else:
-        workbook = Workbook()
+    # Записываем данные в Excel
+    with pd.ExcelWriter(os.path.join(output_folder, 'Тест второго порядка.xlsx'), engine='xlsxwriter') as writer:
+        # Создаем лист для результатов анализа
+        worksheet_results = writer.book.add_worksheet('тест второго порядка')
 
-    # Создаем новый лист для теста второго порядка
-    sheet_name = 'Тест второго порядка'
-    if sheet_name not in workbook.sheetnames:
-        worksheet_results = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_results = workbook[sheet_name]
+        # Записываем очищенный полный отчет, разбивая строки по пробелам
+        for row_num, line in enumerate(report_lines_cleaned):
+            columns = line.split()
+            for col_num, cell_value in enumerate(columns):
+                worksheet_results.write(row_num, col_num, cell_value)
 
-    # Записываем очищенный полный отчет, разбивая строки по пробелам
-    for row_num, line in enumerate(report_lines_cleaned):
-        columns = line.split()
-        for col_num, cell_value in enumerate(columns):
-            worksheet_results.cell(row=row_num + 1, column=col_num + 1, value=cell_value)
+        # Определяем начальную строку для вставки DataFrame
+        start_row = len(report_lines_cleaned) + 2  # Добавляем небольшой отступ
 
-    # Определяем начальную строку для вставки DataFrame
-    start_row = len(report_lines_cleaned) + 2  # Добавляем небольшой отступ
+        # Записываем DataFrame вниз под текстовым отчетом
+        for col_num, header in enumerate(df_results.columns):
+            worksheet_results.write(start_row, col_num, header)  # Записываем заголовки
 
-    # Записываем DataFrame вниз под текстовым отчетом
-    for col_num, header in enumerate(df_results.columns):
-        worksheet_results.cell(row=start_row, column=col_num + 1, value=header)  # Заголовки
+        for row_num, (digit, exp, found_val, z) in enumerate(
+                zip(df_results['Первые цифры'], df_results['Теор'], df_results['Факт'],
+                    df_results['Z_статистика']),
+                start=start_row + 1):
+            worksheet_results.write(row_num, 0, digit)  # First_2_Dig
+            worksheet_results.write(row_num, 1, exp)  # Expected
+            worksheet_results.write(row_num, 2, found_val)  # Found
+            worksheet_results.write(row_num, 3, z)  # Z_score
 
-    for row_num, (digit, exp, found_val, z) in enumerate(
-            zip(df_results['Первые цифры'], df_results['Теор'], df_results['Факт'],
-                df_results['Z_статистика']),
-            start=start_row + 1):
-        worksheet_results.cell(row=row_num, column=1, value=digit)  # Первые цифры
-        worksheet_results.cell(row=row_num, column=2, value=exp)  # Теор
-        worksheet_results.cell(row=row_num, column=3, value=found_val)  # Факт
-        worksheet_results.cell(row=row_num, column=4, value=z)  # Z-статистика
+        # Растягиваем ширину колонок
+        for col_num, _ in enumerate(df_results.columns):
+            max_width = max(
+                [len(str(value)) for value in df_results.iloc[:, col_num]] + [len(df_results.columns[col_num])])
+            worksheet_results.set_column(col_num, col_num, max_width + 2)  # Добавляем небольшой отступ
 
-    # Вставляем график в Excel на новый лист
-    img = Image(image_path)
-    img.width = img.width // 2  # Уменьшаем размер изображения
-    img.height = img.height // 2
-    worksheet_results.add_image(img, f'K1')  # Вставляем график в ячейку K1
-
-    # Сохранение изменений в файл Excel
-    workbook.save(file_name)
-
-    print(f"Отчет сохранен в файл {file_name}")
+        # Вставляем график в Excel со столбца K
+        worksheet_results.insert_image('K1', image_path, {'x_scale': 0.5, 'y_scale': 0.5})
 
     # Удаляем временный файл изображения
     import os
     os.remove(image_path)
-
+    update_log("Выгрузка теста мантисс...")
     """## **6. Тест мантисс**"""
 
-    # Путь к файлу Excel
-    file_name = os.path.join(output_folder, 'Отчёт.xlsx')
+    import io
+    import sys
+    import pandas as pd
+    import os
+    import matplotlib.pyplot as plt
 
-    # Выгрузка теста мантисс
-    update_log("Выгрузка теста мантисс...")
-
-    # Перехватываем вывод команды
+    # Выполняем команду, которая выводит результаты
+    image_path_1 = 'plot_1.png'
+    image_path_2 = 'plot_2.png'
     report_output = io.StringIO()
     sys.stdout = report_output
 
@@ -584,118 +459,86 @@ def analyze_data():
     report_text = report_output.getvalue()
     report_lines = [line.strip() for line in report_text.splitlines()]
 
-    # Сохраняем все открытые графики
-    image_path_1 = 'plot_1.png'
-    image_path_2 = 'plot_2.png'
+    # Сохраняем все открытые графики по отдельности
     figures = [plt.figure(i) for i in plt.get_fignums()]
 
     # Сохраняем графики
-    if len(figures) >= 2:
-        figures[0].savefig(image_path_1)
-        figures[1].savefig(image_path_2)
+    figures[0].savefig(image_path_1)
+    figures[1].savefig(image_path_2)
 
     # Закрываем все открытые фигуры
     plt.close('all')
 
-    # Открываем или создаем файл Excel
-    if os.path.exists(file_name):
-        workbook = load_workbook(file_name)
-    else:
-        workbook = Workbook()
+    # Записываем данные в Excel
+    with pd.ExcelWriter(os.path.join(output_folder, 'Тест Мантисс.xlsx'), engine='xlsxwriter') as writer:
+        # Создаем лист для результатов анализа
+        worksheet_results = writer.book.add_worksheet('Тест Мантисс')
 
-    # Добавляем новый лист для теста Мантисс
-    sheet_name = 'Тест Мантисс'
-    if sheet_name not in workbook.sheetnames:
-        worksheet_results = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_results = workbook[sheet_name]
+        # Записываем очищенный полный отчет, разбивая строки по пробелам
+        for row_num, line in enumerate(report_lines):
+            columns = line.split()
+            for col_num, cell_value in enumerate(columns):
+                worksheet_results.write(row_num, col_num, cell_value)
 
-    # Записываем очищенный полный отчет, разбивая строки по пробелам
-    for row_num, line in enumerate(report_lines):
-        columns = line.split()
-        for col_num, cell_value in enumerate(columns):
-            worksheet_results.cell(row=row_num + 1, column=col_num + 1, value=cell_value)
+        # Вставляем графики в Excel
+        worksheet_results.insert_image('A12', image_path_1, {'x_scale': 0.5, 'y_scale': 0.5})
+        worksheet_results.insert_image('K1', image_path_2, {'x_scale': 0.5, 'y_scale': 0.5})
 
-    # Вставляем графики в Excel
-    if os.path.exists(image_path_1):
-        img_1 = Image(image_path_1)
-        img_1.width, img_1.height = img_1.width // 2, img_1.height // 2
-        worksheet_results.add_image(img_1, 'A12')  # Вставляем первый график
-
-    if os.path.exists(image_path_2):
-        img_2 = Image(image_path_2)
-        img_2.width, img_2.height = img_2.width // 2, img_2.height // 2
-        worksheet_results.add_image(img_2, 'K1')  # Вставляем второй график
-
-    # Сохраняем изменения в файл Excel
-    workbook.save(file_name)
-
-    # Удаляем временные файлы изображений
-    if os.path.exists(image_path_1):
-        os.remove(image_path_1)
-    if os.path.exists(image_path_2):
-        os.remove(image_path_2)
-
-    print(f"Отчет и графики успешно сохранены в файл {file_name}")
+    # Удаляем временные файлы изображений, если они существуют
+    os.remove(image_path_1)
+    os.remove(image_path_2)
 
     """## **7. Связанные тесты**"""
-
     update_log("Выгрузка связанных тестов...")
-    # Путь к файлу Excel
-    output_path = os.path.join(output_folder, 'Отчёт.xlsx')
-
-    # Проверка существования файла
-    if os.path.exists(output_path):
-        workbook = load_workbook(output_path)
-    else:
-        workbook = Workbook()
-
-    "# 7.1 Тест дублирования сумм"
-
-    update_log("Выгрузка теста дублирования сумм...")
+    "# 7.1 Тест дублирования cумм"
     temp = df.groupby('Сумма')['Сумма'].count() / len(df)
     sum_ = list(temp.index)
     frequency = list(temp)
     df_temp = pd.DataFrame({"Сумма": sum_, "Частота суммы": frequency})
+
     df = df.merge(df_temp, on='Сумма')
     most_frequent_values = df['Сумма'].value_counts().head(10)
+
     sorted_counts = most_frequent_values.sort_values(ascending=False)
 
+    bar_width = 0.5  # Увеличиваем ширину столбцов
+    bar_positions = [i + bar_width / 2 for i in range(len(sorted_counts))]  # Смещаем позиции столбцов
+
     # Построение графика
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.bar([i + 0.5 for i in range(len(sorted_counts))], sorted_counts.values, width=0.5, align='center',
+    fig, ax = plt.subplots(figsize=(10, 6))  # Используем fig и ax для сохранения фигуры
+    ax.bar(bar_positions, sorted_counts.values, width=bar_width, align='center',
            color=(0 / 255, 121 / 255, 140 / 255))
     ax.set_xlabel('Значения')
     ax.set_ylabel('Частота')
     ax.set_title('Тест дублирования сумм')
-    ax.set_xticks([i + 0.5 for i in range(len(sorted_counts))])
+    ax.set_xticks(bar_positions)
     ax.set_xticklabels(sorted_counts.index, rotation=45)
 
+    # Добавляем проверку данных и настраиваем границы осей
+    ax.set_xlim([min(bar_positions) - bar_width, max(bar_positions) + bar_width])
+    ax.set_ylim([0, max(sorted_counts.values) * 1.1])  # Увеличиваем верхнюю границу на 10% для видимости
+
     plt.tight_layout()
-    image_path = 'plot_duplication.png'
-    fig.savefig(image_path)
-    plt.close(fig)
 
-    # Добавление листа для теста дублирования сумм
-    sheet_name = 'Тест дублирования сумм'
-    if sheet_name not in workbook.sheetnames:
-        worksheet_results = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_results = workbook[sheet_name]
+    # Сохраняем график
+    image_path = 'plot.png'
+    fig.savefig(image_path)  # Сохраняем график через fig.savefig
+    plt.close(fig)  # Закрываем конкретную фигуру
 
-    # Вставка графика
-    img_duplication = Image(image_path)
-    img_duplication.width, img_duplication.height = img_duplication.width // 2, img_duplication.height // 2
-    worksheet_results.add_image(img_duplication, 'A1')
+    # Запись в Excel
+    with pd.ExcelWriter(os.path.join(output_folder, 'Тест дублирования сумм.xlsx'), engine='xlsxwriter') as writer:
+        worksheet_results = writer.book.add_worksheet('Тест дублирования сумм')
+        worksheet_results.insert_image('A1', image_path)
 
-    # Сохранение изменений
-    workbook.save(output_path)
-
-    # Удаление временного файла изображения
+    # Удаляем временный файл
     os.remove(image_path)
 
     "# 7.2 Тест двух последних цифр"
-    update_log("Выгрузка теста двух последних цифр...")
+
+    import io
+    import sys
+    import pandas as pd
+    import re
 
     # Перехватываем вывод команды benf.F2D_sec.report()
     benf.sec_order()
@@ -753,40 +596,41 @@ def analyze_data():
             continue
         report_lines_cleaned.append(line)
 
-    if os.path.exists(output_path):
-        workbook = load_workbook(output_path)
-    else:
-        workbook = Workbook()
-
     # Записываем данные в Excel
-    worksheet_results = workbook.create_sheet('Тест двух последних цифр')
+    with pd.ExcelWriter(os.path.join(output_folder, 'Тест двух последних цифр.xlsx'), engine='xlsxwriter') as writer:
+        # Создаем лист для результатов анализа
+        worksheet_results = writer.book.add_worksheet('тест двух последних цифр')
 
-    # Записываем очищенный полный отчет, разбивая строки по пробелам
-    for row_num, line in enumerate(report_lines_cleaned):
-        columns = line.split()
-        for col_num, cell_value in enumerate(columns):
-            worksheet_results.cell(row=row_num + 1, column=col_num + 1, value=cell_value)
+        # Записываем очищенный полный отчет, разбивая строки по пробелам
+        for row_num, line in enumerate(report_lines_cleaned):
+            columns = line.split()
+            for col_num, cell_value in enumerate(columns):
+                worksheet_results.write(row_num, col_num, cell_value)
 
-    # Определяем начальную строку для вставки DataFrame
-    start_row = len(report_lines_cleaned) + 2  # Добавляем небольшой отступ
+        # Определяем начальную строку для вставки DataFrame
+        start_row = len(report_lines_cleaned) + 2  # Добавляем небольшой отступ
 
-    # Записываем DataFrame вниз под текстовым отчетом
-    for col_num, header in enumerate(df_results.columns):
-        worksheet_results.cell(row=start_row, column=col_num + 1, value=header)  # Записываем заголовки
+        # Записываем DataFrame вниз под текстовым отчетом
+        for col_num, header in enumerate(df_results.columns):
+            worksheet_results.write(start_row, col_num, header)  # Записываем заголовки
 
-    for row_num, (digit, exp, found_val, z) in enumerate(
-            zip(df_results['Первые цифры'], df_results['Теор'], df_results['Факт'], df_results['Z_статистика']),
-            start=start_row + 1):
-        worksheet_results.cell(row=row_num, column=1, value=digit)  # Первые цифры
-        worksheet_results.cell(row=row_num, column=2, value=exp)  # Теор
-        worksheet_results.cell(row=row_num, column=3, value=found_val)  # Факт
-        worksheet_results.cell(row=row_num, column=4, value=z)  # Z-статистика
+        for row_num, (digit, exp, found_val, z) in enumerate(
+                zip(df_results['Первые цифры'], df_results['Теор'], df_results['Факт'],
+                    df_results['Z_статистика']),
+                start=start_row + 1):
+            worksheet_results.write(row_num, 0, digit)  # First_2_Dig
+            worksheet_results.write(row_num, 1, exp)  # Expected
+            worksheet_results.write(row_num, 2, found_val)  # Found
+            worksheet_results.write(row_num, 3, z)  # Z_score
 
-    from openpyxl.drawing.image import Image
-    img = Image(image_path)
-    worksheet_results.add_image(img, 'K1')
+        # Растягиваем ширину колонок
+        for col_num, _ in enumerate(df_results.columns):
+            max_width = max(
+                [len(str(value)) for value in df_results.iloc[:, col_num]] + [len(df_results.columns[col_num])])
+            worksheet_results.set_column(col_num, col_num, max_width + 2)  # Добавляем небольшой отступ
 
-    workbook.save(output_path)
+        # Вставляем график в Excel со столбца K
+        worksheet_results.insert_image('K1', image_path, {'x_scale': 0.5, 'y_scale': 0.5})
 
     # Удаляем временный файл изображения
     import os
@@ -797,7 +641,7 @@ def analyze_data():
     import pandas as pd
     import numpy as np
 
-    # Предположим, что df уже определен. Ваш расчет значений:
+    # Расчет значений
     result = df.loc[df['Сумма'] >= 10]
     result.loc[result['Сумма'] != 0, ['Сумма']] = (
             10 * result['Сумма'] / (10 ** (np.log10(result['Сумма']).fillna(0)).astype(int)))
@@ -824,29 +668,25 @@ def analyze_data():
 
     df_output = pd.DataFrame(data)
 
-    if os.path.exists(output_path):
-        workbook = load_workbook(output_path)
-    else:
-        workbook = Workbook()
+    # Запись в файл Excel с настройками
+    with pd.ExcelWriter(os.path.join(output_folder, 'Оценка коэффициента искажения.xlsx'), engine='xlsxwriter') as writer:
+        df_output.to_excel(writer, sheet_name='Анализ искажения', index=False, startrow=1)
 
-    # Добавляем новый лист для анализа искажения
-    worksheet = workbook.create_sheet('Анализ искажения')
+        # Доступ к workbook и worksheet
+        workbook = writer.book
+        worksheet = writer.sheets['Анализ искажения']
 
-    # Запись данных DataFrame в лист
-    for row_num, (indicator, value) in enumerate(zip(df_output['Показатель'], df_output['Значение']), start=2):
-        worksheet.cell(row=row_num, column=1, value=indicator)  # Показатель
-        worksheet.cell(row=row_num, column=2, value=value)  # Значение
+        # Форматирование
+        center_format = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
 
-    # Установка ширины столбцов по максимальной длине значений
-    for col_num, col_name in enumerate(df_output.columns, start=1):
-        max_len = max(df_output[col_name].astype(str).map(len).max(), len(col_name)) + 2
-        worksheet.column_dimensions[chr(64 + col_num)].width = max_len
+        # Установка ширины столбцов по максимальной длине значений
+        for i, col in enumerate(df_output.columns):
+            max_len = max(df_output[col].astype(str).map(len).max(), len(col)) + 2  # Добавляем небольшой отступ
+            worksheet.set_column(i, i, max_len, center_format)
 
-    # Добавление заголовка
-    worksheet.cell(row=1, column=1, value='Анализ искажения данных')
-    worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
-
-    workbook.save(output_path)
+        # Добавление заголовка
+        worksheet.write(0, 0, 'Анализ искажения данных', workbook.add_format({'bold': True, 'align': 'center'}))
+        worksheet.merge_range(0, 0, 0, len(df_output.columns) - 1, 'Анализ искажения данных', center_format)
 
     """Кластеризация. Этап 1"""
     update_log("Подготовка к кластеризации...")
@@ -951,7 +791,6 @@ def analyze_data():
     df = df.merge(df_first_two_stats, on='first_two')
 
     # Тест суммирования
-
     two_real = df.groupby('first_two')['Сумма'].sum() / df['Сумма'].sum()
 
     df_abs_delta = pd.DataFrame({"first_two": list(range(10, 100)), "sum_frequency": list(two_real)})
@@ -975,6 +814,7 @@ def analyze_data():
     ind = df_cur.index
     df.loc[ind, "z_stat_second_diff"] = df_cur["z_stat_second_diff"]
 
+    #TODO отсюда продолжить перенос
     # Z-Тест последних двух цифр
 
     df_cur = df
@@ -1106,55 +946,37 @@ def analyze_data():
     plt.savefig(image_path)
     plt.close('all')  # Закрывает все открытые графики
 
-    # Путь к существующему Excel-файлу "Отчёт"
-    file_name = os.path.join(output_folder, 'Отчёт.xlsx')
-
-    # Открываем существующий файл
-    if os.path.exists(file_name):
-        workbook = load_workbook(file_name)
-    else:
-        raise FileNotFoundError(f"Файл '{file_name}' не найден!")
-
-    # Название нового листа для данных силуэта
+    # Экспорт данных в Excel
+    excel_file = os.path.join(output_folder, 'Силуэт (этап 1).xlsx')
     sheet_name = 'Силуэт'
 
-    # Проверяем, существует ли уже лист "Силуэт", и создаём его, если нет
-    if sheet_name not in workbook.sheetnames:
-        worksheet_silhouette = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_silhouette = workbook[sheet_name]
+    with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+        # Создаем лист для результатов анализа
+        worksheet_silhouette = writer.book.add_worksheet(sheet_name)
 
-    # Записываем строку с оптимальным числом кластеров
-    worksheet_silhouette.cell(row=1, column=1, value=f'Оптимальное количество кластеров: {best_n_clusters}')
+        # Записываем строку с оптимальным числом кластеров
+        worksheet_silhouette.write(0, 0, f'Оптимальное количество кластеров: {best_n_clusters}')
 
-    # Записываем заголовки для данных
-    worksheet_silhouette.cell(row=3, column=1, value='Количество кластеров')
-    worksheet_silhouette.cell(row=3, column=2, value='Silhouette Score')
+        # Записываем результаты анализа в Excel
+        worksheet_silhouette.write(2, 0, 'Количество кластеров')
+        worksheet_silhouette.write(2, 1, 'Silhouette Score')
 
-    # Записываем данные анализа с помощью метода append
-    for n_clusters, score in zip(x, m):
-        worksheet_silhouette.append([n_clusters, score])
+        for row_num, (n_clusters, score) in enumerate(zip(x, m), start=3):
+            worksheet_silhouette.write(row_num, 0, n_clusters)
+            worksheet_silhouette.write(row_num, 1, score)
 
-    # Вставляем график в Excel
-    image_path = 'silhouette_plot.png'
-    img = Image(image_path)
-    worksheet_silhouette.add_image(img, 'C1')
+        # Вставляем график в Excel
+        worksheet_silhouette.insert_image('C1', image_path, {'x_scale': 1, 'y_scale': 1})
 
-    # Автовыравнивание ширины столбцов A и B
-    max_len_col1 = max([len(str(n)) for n in x] + [len('Количество кластеров')])
-    max_len_col2 = max([len(f'{s:.3f}') for s in m] + [len('Silhouette Score')])
+        # Автовыравнивание ширины столбцов A и B
+        worksheet_silhouette.set_column(0, 0, max([len(str(n)) for n in x] + [len('Количество кластеров')]))
+        worksheet_silhouette.set_column(1, 1, max([len(f'{s:.3f}') for s in m] + [len('Silhouette Score')]))
 
-    worksheet_silhouette.column_dimensions['A'].width = max_len_col1
-    worksheet_silhouette.column_dimensions['B'].width = max_len_col2
-
-    # Сохраняем изменения в файл Excel
-    workbook.save(file_name)
-
-    # Удаляем временные файлы изображений
+    # Удаляем временные файлы изображений, если они существуют
     if os.path.exists(image_path):
         os.remove(image_path)
 
-    print(f"График силуэта и результаты анализа успешно добавлены в '{file_name}' на лист '{sheet_name}'.")
+    print(f"График силуэта и результаты анализа успешно сохранены в '{excel_file}'.")
 
     # Применение KMeans с оптимальным количеством кластеров
     if "Class" in scaled_df.columns:
@@ -1182,82 +1004,59 @@ def analyze_data():
     plt.tick_params(axis='y', labelsize=10)  # Уменьшаем шрифт оси y
     plt.tight_layout()  # Подбираем отступы
 
-    # Путь к Excel-файлу "Отчёт.xlsx"
-    excel_file = os.path.join(output_folder, 'Отчёт.xlsx')
-
     # Сохраняем график
-    image_path_z_stats = os.path.join(output_folder, 'z_stats.png')
+    image_path_z_stats = 'z_stats.png'
     plt.savefig(image_path_z_stats)
     plt.close('all')  # Закрывает все открытые графики
 
-    # Проверьте, что файл с графиком существует
-    if not os.path.exists(image_path_z_stats):
-        raise FileNotFoundError(f"Файл '{image_path_z_stats}' не был создан.")
+    # Добавляем лист с результатами в существующий файл z_stats_report.xlsx
+    sheet_name = 'Статистики'
+    excel_file = os.path.join(output_folder, 'Z-статистики.xlsx')
+    with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+        # Создаем новый лист "Статистики"
+        worksheet_z_stats = writer.book.add_worksheet(sheet_name)
 
-    # Открываем существующий Excel-файл или создаём новый
-    if os.path.exists(excel_file):
-        workbook = load_workbook(excel_file)
-    else:
-        workbook = Workbook()
+        # Вставляем таблицу grouped_count в Excel
+        worksheet_z_stats.write(0, 0, 'Класс')
+        worksheet_z_stats.write(0, 1, 'Число объектов')
 
-    # Название нового листа
-    sheet_name = 'Z-Статистики'
+        # Записываем данные таблицы grouped_count
+        row_num = 1
+        for class_label, count in grouped_count.items():
+            worksheet_z_stats.write(row_num, 0, class_label)
+            worksheet_z_stats.write(row_num, 1, count)
+            row_num += 1
 
-    # Проверяем, существует ли уже лист с названием "Статистики"
-    if sheet_name not in workbook.sheetnames:
-        worksheet_z_stats = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_z_stats = workbook[sheet_name]
-
-    # Вставляем таблицу grouped_count в Excel
-    worksheet_z_stats.cell(row=1, column=1, value='Класс')
-    worksheet_z_stats.cell(row=1, column=2, value='Число объектов')
-
-    # Записываем данные из grouped_count
-    row_num = 2
-    for class_label, count in grouped_count.items():
-        worksheet_z_stats.cell(row=row_num, column=1, value=class_label)
-        worksheet_z_stats.cell(row=row_num, column=2, value=count)
+        # Вставляем таблицу mean_temp (начиная с того же row_num)
+        worksheet_z_stats.write(row_num, 0, 'Средние значения')
         row_num += 1
 
-    # Вставляем таблицу mean_temp (начиная с того же row_num)
-    worksheet_z_stats.cell(row=row_num, column=1, value='Средние значения')
-    row_num += 1
-
-    # Записываем заголовки столбцов для mean_temp
-    for col_num, col_name in enumerate(mean_temp.columns):
-        worksheet_z_stats.cell(row=row_num, column=col_num + 2, value=col_name)  # Заголовки столбцов
-    row_num += 1
-
-    # Записываем значения для mean_temp
-    for class_label, row in mean_temp.iterrows():
-        worksheet_z_stats.cell(row=row_num, column=1, value=class_label)  # Записываем номер класса
-        for col_num, value in enumerate(row):
-            worksheet_z_stats.cell(row=row_num, column=col_num + 2, value=value)  # Записываем значения
+        # Записываем средние значения из таблицы mean_temp
+        for col_num, col_name in enumerate(mean_temp.columns):
+            worksheet_z_stats.write(row_num, col_num + 1, col_name)  # Заголовки столбцов
         row_num += 1
 
-    # Вставляем график в Excel
-    img = Image(image_path_z_stats)
-    img.width = img.width // 2.5  # Масштабирование изображения
-    img.height = img.height // 2.5
-    worksheet_z_stats.add_image(img, 'A8')
+        for class_label, row in mean_temp.iterrows():
+            worksheet_z_stats.write(row_num, 0, class_label)  # Записываем номер класса
+            for col_num, value in enumerate(row):
+                worksheet_z_stats.write(row_num, col_num + 1, value)  # Записываем значения
+            row_num += 1
 
-    # Устанавливаем автоподбор ширины для столбцов
-    worksheet_z_stats.column_dimensions['A'].width = 15  # Ширина для столбца 'Класс'
-    worksheet_z_stats.column_dimensions['B'].width = 20  # Ширина для столбца 'Число объектов'
+        # Вставляем график в Excel (в ячейку D1)
+        worksheet_z_stats.insert_image('A8', image_path_z_stats, {'x_scale': 0.4, 'y_scale': 0.4})
+        # Устанавливаем автоподбор ширины для столбцов
+        worksheet_z_stats.set_column(0, 0, 15)  # Ширина для столбца 'Класс'
+        worksheet_z_stats.set_column(1, 1, 20)  # Ширина для столбца 'Число объектов'
 
-    # Устанавливаем ширину для столбцов mean_temp
-    for col_num in range(len(mean_temp.columns)):
-        worksheet_z_stats.column_dimensions[chr(67 + col_num)].width = 20  # Столбцы с заголовками начинаются с C
+        # Устанавливаем ширину для столбцов таблицы mean_temp
+        for col_num in range(len(mean_temp.columns)):
+            worksheet_z_stats.set_column(col_num + 1, col_num + 1, 20)  # Ширина для средних значений
 
-    # Сохраняем изменения в файл Excel
-    workbook.save(excel_file)
-
-    # Удаляем временные файлы изображений
+    # Удаляем временные файлы изображений, если они существуют
     if os.path.exists(image_path_z_stats):
         os.remove(image_path_z_stats)
 
-    print(f"Лист 'Z-Статистики' добавлен к файлу '{excel_file}'. Файл готов для скачивания.")
+    print(f"Лист 'Статистики' добавлен к файлу '{excel_file}'. Файл готов для скачивания.")
 
     temp.groupby("Class").mean()
 
@@ -1290,41 +1089,21 @@ def analyze_data():
     plt.xlabel("Главная компонента 1")
     plt.ylabel("Главная компонента 2")
 
-    # Путь к Excel-файлу "Отчёт.xlsx"
-    excel_file = os.path.join(output_folder, 'Отчёт.xlsx')
-
     # Сохраняем график
-    image_path_pca = os.path.join(output_folder, 'pca_plot.png')
+    image_path_pca = 'pca_plot.png'
     plt.savefig(image_path_pca)
     plt.close('all')  # Закрывает все открытые графики
 
-    # Проверьте, что файл с графиком существует
-    if not os.path.exists(image_path_pca):
-        raise FileNotFoundError(f"Файл '{image_path_pca}' не был создан.")
-
-    # Открываем существующий Excel-файл или создаём новый, если файла нет
-    if os.path.exists(excel_file):
-        workbook = load_workbook(excel_file)
-    else:
-        workbook = Workbook()
-
-    # Название нового листа
+    # Добавляем лист с результатами PCA в существующий файл clustering_report.xlsx
     sheet_name = 'Метод ГК'
+    excel_file = os.path.join(output_folder, 'Главные компоненты.xlsx')
+    with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+        # Создаем новый лист "Метод ГК"
+        worksheet_pca = writer.book.add_worksheet(sheet_name)
+        # Вставляем график главных компонент в Excel
+        worksheet_pca.insert_image('A1', image_path_pca, {'x_scale': 1, 'y_scale': 1})
 
-    # Проверяем, существует ли уже лист с названием "Метод ГК"
-    if sheet_name not in workbook.sheetnames:
-        worksheet_pca = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_pca = workbook[sheet_name]
-
-    # Вставляем график PCA в Excel
-    img = Image(image_path_pca)
-    worksheet_pca.add_image(img, 'A1')
-
-    # Сохраняем изменения в файл Excel
-    workbook.save(excel_file)
-
-    # Удаляем временные файлы изображений
+    # Удаляем временные файлы изображений, если они существуют
     if os.path.exists(image_path_pca):
         os.remove(image_path_pca)
 
@@ -1412,88 +1191,55 @@ def analyze_data():
         pd.MultiIndex.from_product([[-1, 1], classes], names=["ElLabels", "Class"]), fill_value=0
     )
 
-    # Путь к Excel-файлу "Отчёт.xlsx"
-    excel_file = os.path.join(output_folder, 'Отчёт.xlsx')
+    # Создаем новый Excel-файл
+    excel_file = os.path.join(output_folder, 'Аномальный класс (этап 1).xlsx')
+    with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+        # Записываем результаты для Isolation Forest
+        worksheet_iso = writer.book.add_worksheet('Isolation Forest')
+        worksheet_iso.write(0, 0, 'IsoLabels')
+        worksheet_iso.write(0, 1, 'Класс')
+        worksheet_iso.write(0, 2, 'Число объектов')
 
-    # Открываем существующий Excel-файл или создаём новый, если файла нет
-    if os.path.exists(excel_file):
-        workbook = load_workbook(excel_file)
-    else:
-        workbook = Workbook()
+        # Записываем данные для IsoLabels
+        for row_num, (index, row) in enumerate(grouped_iso.iterrows(), start=1):
+            worksheet_iso.write(row_num, 0, index[0])  # IsoLabels
+            worksheet_iso.write(row_num, 1, index[1])  # Class
+            worksheet_iso.write(row_num, 2, row['z-stat first'])  # Count
 
-    from openpyxl.utils import get_column_letter
-    # Название нового листа
-    sheet_name = 'Аномальный класс (этап 1)'
+        # Добавляем информацию об аномальном классе по Isolation Forest
+        worksheet_iso.write(len(grouped_iso) + 2, 0, 'Аномальный класс по Isolation Forest:')
+        worksheet_iso.write(len(grouped_iso) + 2, 1, anomaly_class_iso)
 
-    # Проверяем, существует ли уже лист с названием "Аномальный класс (этап 1)"
-    if sheet_name not in workbook.sheetnames:
-        worksheet_iso = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_iso = workbook[sheet_name]
+        # Добавляем разделитель между результатами
+        worksheet_iso.write(len(grouped_iso) + 4, 0, '-----')  # Разделитель
+        worksheet_iso.write(len(grouped_iso) + 5, 0, 'Elliptic Envelope')  # Заголовок для Elliptic Envelope
 
-    # Записываем заголовки для Isolation Forest
-    worksheet_iso.cell(row=1, column=1, value='IsoLabels')
-    worksheet_iso.cell(row=1, column=2, value='Класс')
-    worksheet_iso.cell(row=1, column=3, value='Число объектов')
+        # Записываем результаты для Elliptic Envelope
+        worksheet_iso.write(len(grouped_iso) + 6, 0, 'ElLabels')
+        worksheet_iso.write(len(grouped_iso) + 6, 1, 'Класс')
+        worksheet_iso.write(len(grouped_iso) + 6, 2, 'Число объектов')
 
-    # Записываем данные для IsoLabels
-    for row_num, (index, row) in enumerate(grouped_iso.iterrows(), start=2):
-        worksheet_iso.cell(row=row_num, column=1, value=index[0])  # IsoLabels
-        worksheet_iso.cell(row=row_num, column=2, value=index[1])  # Class
-        worksheet_iso.cell(row=row_num, column=3, value=row['z-stat first'])  # Count
+        for row_num, (index, row) in enumerate(grouped_el.iterrows(), start=len(grouped_iso) + 7):
+            worksheet_iso.write(row_num, 0, index[0])  # ElLabels
+            worksheet_iso.write(row_num, 1, index[1])  # Class
+            worksheet_iso.write(row_num, 2, row['z-stat first'])  # Count
 
-    # Добавляем информацию об аномальном классе по Isolation Forest
-    anomaly_row = len(grouped_iso) + 3
-    worksheet_iso.cell(row=anomaly_row, column=1, value='Аномальный класс по Isolation Forest:')
-    worksheet_iso.cell(row=anomaly_row, column=2, value=anomaly_class_iso)
+        # Добавляем информацию об аномальном классе по Elliptic Envelope
+        worksheet_iso.write(len(grouped_iso) + len(grouped_el) + 7, 0, 'Аномальный класс по Elliptic Envelope:')
+        worksheet_iso.write(len(grouped_iso) + len(grouped_el) + 7, 1, anomaly_class_el)
 
-    # Добавляем разделитель между результатами
-    divider_row = anomaly_row + 2
-    worksheet_iso.cell(row=divider_row, column=1, value='-----')  # Разделитель
-    worksheet_iso.cell(row=divider_row + 1, column=1, value='Elliptic Envelope')  # Заголовок для Elliptic Envelope
-
-    # Записываем заголовки для Elliptic Envelope
-    elliptic_row_start = divider_row + 2
-    worksheet_iso.cell(row=elliptic_row_start, column=1, value='ElLabels')
-    worksheet_iso.cell(row=elliptic_row_start, column=2, value='Класс')
-    worksheet_iso.cell(row=elliptic_row_start, column=3, value='Число объектов')
-
-    # Записываем данные для ElLabels
-    for row_num, (index, row) in enumerate(grouped_el.iterrows(), start=elliptic_row_start + 1):
-        worksheet_iso.cell(row=row_num, column=1, value=index[0])  # ElLabels
-        worksheet_iso.cell(row=row_num, column=2, value=index[1])  # Class
-        worksheet_iso.cell(row=row_num, column=3, value=row['z-stat first'])  # Count
-
-    # Добавляем информацию об аномальном классе по Elliptic Envelope
-    worksheet_iso.cell(row=row_num + 1, column=1, value='Аномальный класс по Elliptic Envelope:')
-    worksheet_iso.cell(row=row_num + 1, column=2, value=anomaly_class_el)
-
-    # Автовыравнивание ширины столбцов
-    for col in range(1, 4):
-        column_letter = get_column_letter(col)
-        worksheet_iso.column_dimensions[column_letter].width = 20
-
-    # Сохраняем изменения в файл Excel
-    workbook.save(excel_file)
-
-    print(f"Лист 'Аномальный класс (этап 1)' добавлен к файлу '{excel_file}'.")
+    print(f'Файл {excel_file} создан с аномальными классами для обоих методов.')
 
     scaled_df_temp = scaled_df.copy()
     scaled_df = scaled_df.drop(["ElLabels", "IsoLabels"], axis=1)
 
-    from openpyxl.drawing.image import Image
-    from openpyxl import load_workbook
-    # Загружаем существующий файл Excel
-    workbook = load_workbook(excel_file)
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import xlsxwriter
+    import os
 
-    # Название нового листа для графиков
-    sheet_name = 'Аномальный класс (графики)'
-
-    # Проверяем, существует ли уже лист с таким названием
-    if sheet_name not in workbook.sheetnames:
-        worksheet = workbook.create_sheet(sheet_name)
-    else:
-        worksheet = workbook[sheet_name]
+    # Путь к файлу Excel
+    excel_file = os.path.join(output_folder, 'Аномальный класс (графики).xlsx')
 
     # Создание графиков для каждого класса и сохранение в файлы PNG
     classes = scaled_df_temp["Class"].unique()
@@ -1531,7 +1277,9 @@ def analyze_data():
         plt.title(f'График для класса {cls}')
         plt.xlabel('Показатели')
         plt.ylabel('Значение')
-        plt.grid(True, linestyle='--', linewidth=0.5)
+
+        # Добавление сетки
+        plt.grid(True, linestyle='--', linewidth=0.5)  # Настройки сетки
 
         # Сохранение графика в PNG
         image_file = f'class_{cls}_plot.png'
@@ -1539,21 +1287,20 @@ def analyze_data():
         image_files.append(image_file)
         plt.close('all')  # Закрывает все открытые графики
 
-    # Координаты для вставки графиков
-    start_row = 1  # Стартовая строка для первого графика
+    # Создание файла Excel с помощью xlsxwriter
+    with xlsxwriter.Workbook(excel_file) as workbook:
+        worksheet = workbook.add_worksheet('Графики')
 
-    # Вставка всех графиков на лист с уменьшением масштаба
-    for cls, image_file in zip(classes, image_files):
-        # Вставляем изображение графика в ячейку листа Excel
-        img = Image(image_file)
-        img.width, img.height = img.width * 0.5, img.height * 0.5  # Уменьшаем масштаб графиков
-        worksheet.add_image(img, f'A{start_row}')  # Вставляем график в ячейку
+        # Координаты для вставки графиков
+        start_row = 0
 
-        # Обновляем стартовую строку для следующего графика
-        start_row += 20  # Подбираем это значение в зависимости от высоты графиков
+        # Вставка всех графиков на один лист с уменьшением масштаба
+        for cls, image_file in zip(classes, image_files):
+            # Вставляем изображение графика на лист, уменьшая масштаб по осям
+            worksheet.insert_image(start_row, 0, image_file, {'x_scale': 0.5, 'y_scale': 0.5})
 
-    # Сохраняем изменения в файл Excel
-    workbook.save(excel_file)
+            # Обновляем стартовую строку для следующего графика
+            start_row += 20  # Подбираем это значение в зависимости от высоты графиков
 
     # Удаляем временные файлы с графиками после вставки в Excel
     for image_file in image_files:
@@ -1575,11 +1322,8 @@ def analyze_data():
     # Вывод
     anomaly_original_rows.head(10)
 
-    # Название нового листа, на который нужно сохранить данные
-    sheet_name = 'Подозрительные операции'
-    with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-        # Записываем данные на новый лист
-        anomaly_original_rows.to_excel(writer, sheet_name=sheet_name, index=False)
+    # вывод всех аномальных строк изначального документа
+    anomaly_original_rows.to_excel(os.path.join(output_folder, 'Список подозрительных операций (этап 1).xlsx'), index=False)
 
     cluster_1_index = list(scaled_df[scaled_df["Class"] == anomaly_class_el].index)
 
@@ -1632,57 +1376,41 @@ def analyze_data():
     plt.title('Зависимость значения метрики от количества кластеров')
 
     # Сохраняем график
-    image_path = 'silhouette_plot_2.png'
+    image_path = 'clust2_silhouette_plot.png'
     plt.savefig(image_path)
     plt.close('all')  # Закрывает все открытые графики
 
-    # Путь к существующему Excel-файлу "Отчёт"
-    file_name = os.path.join(output_folder, 'Отчёт.xlsx')
+    # Экспорт данных в Excel
+    excel_file = os.path.join(output_folder, 'Силуэт (этап 2).xlsx')
+    sheet_name = 'Силуэт'
 
-    # Открываем существующий файл
-    if os.path.exists(file_name):
-        workbook = load_workbook(file_name)
-    else:
-        raise FileNotFoundError(f"Файл '{file_name}' не найден!")
+    with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+        # Создаем лист для результатов анализа
+        worksheet_silhouette = writer.book.add_worksheet(sheet_name)
 
-    # Название нового листа для данных силуэта
-    sheet_name = 'Силуэт (этап 2)'
+        # Записываем строку с оптимальным числом кластеров
+        worksheet_silhouette.write(0, 0, f'Оптимальное количество кластеров: {best_n_clusters}')
 
-    # Проверяем, существует ли уже лист "Силуэт", и создаём его, если нет
-    if sheet_name not in workbook.sheetnames:
-        worksheet_silhouette = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_silhouette = workbook[sheet_name]
+        # Записываем результаты анализа в Excel
+        worksheet_silhouette.write(2, 0, 'Количество кластеров')
+        worksheet_silhouette.write(2, 1, 'Silhouette Score')
 
-    # Записываем строку с оптимальным числом кластеров
-    worksheet_silhouette.cell(row=1, column=1, value=f'Оптимальное количество кластеров: {best_n_clusters}')
+        for row_num, (n_clusters, score) in enumerate(zip(x, m), start=3):
+            worksheet_silhouette.write(row_num, 0, n_clusters)
+            worksheet_silhouette.write(row_num, 1, score)
 
-    # Записываем заголовки для данных
-    worksheet_silhouette.cell(row=3, column=1, value='Количество кластеров')
-    worksheet_silhouette.cell(row=3, column=2, value='Silhouette Score')
+        # Вставляем график в Excel
+        worksheet_silhouette.insert_image('C1', image_path, {'x_scale': 1, 'y_scale': 1})
 
-    # Записываем данные анализа с помощью метода append
-    for n_clusters, score in zip(x, m):
-        worksheet_silhouette.append([n_clusters, score])
+        # Автовыравнивание ширины столбцов A и B
+        worksheet_silhouette.set_column(0, 0, max([len(str(n)) for n in x] + [len('Количество кластеров')]))
+        worksheet_silhouette.set_column(1, 1, max([len(f'{s:.3f}') for s in m] + [len('Silhouette Score')]))
 
-    img = Image(image_path)
-    worksheet_silhouette.add_image(img, 'C1')
-
-    # Автовыравнивание ширины столбцов A и B
-    max_len_col1 = max([len(str(n)) for n in x] + [len('Количество кластеров')])
-    max_len_col2 = max([len(f'{s:.3f}') for s in m] + [len('Silhouette Score')])
-
-    worksheet_silhouette.column_dimensions['A'].width = max_len_col1
-    worksheet_silhouette.column_dimensions['B'].width = max_len_col2
-
-    # Сохраняем изменения в файл Excel
-    workbook.save(file_name)
-
-    # Удаляем временные файлы изображений
+    # Удаляем временные файлы изображений, если они существуют
     if os.path.exists(image_path):
         os.remove(image_path)
 
-    print(f"График силуэта и результаты анализа успешно добавлены в '{file_name}' на лист '{sheet_name}'.")
+    print(f"График силуэта и результаты анализа успешно сохранены в '{excel_file}'.")
     plt.close('all')  # Закрывает все открытые графики
 
     n_clusters = best_n_clusters
@@ -1722,45 +1450,31 @@ def analyze_data():
     plt.tick_params(axis='x', labelsize=18)
     plt.tick_params(axis='y', labelsize=18)
 
-    # Название нового листа для кластеризации
-    sheet_name = 'Кластеризация (этап 2)'
-
     # Сохраняем график во временный файл
-    image_path = 'cluster_plot.png'
-    plt.savefig(image_path, bbox_inches='tight')
-    plt.close('all')  # Закрываем все открытые графики
-
-    # Открываем существующий файл Excel
-    workbook = load_workbook(excel_file)
-
-    # Проверяем, существует ли уже лист с таким названием
-    if sheet_name not in workbook.sheetnames:
-        worksheet = workbook.create_sheet(sheet_name)
-    else:
-        worksheet = workbook[sheet_name]
-
-    # Добавляем заголовки
-    worksheet.cell(row=1, column=1, value="Класс")
-    worksheet.cell(row=1, column=2, value="Число объектов")
-
-    # Записываем данные по количеству объектов в каждом классе в Excel
-    for idx, row in class_counts.iterrows():
-        worksheet.append(row.tolist())  # Записываем каждую строку данных
-
-    # Вставляем график ниже данных
-    start_row = worksheet.max_row + 5  # Позиционируем график через 5 строк после последней записи
-    img = Image(image_path)
-    img.width, img.height = img.width * 0.7, img.height * 0.7  # Уменьшаем масштаб графика
-    worksheet.add_image(img, f'A{start_row}')
-
-    # Сохраняем изменения в файл Excel
-    workbook.save(excel_file)
-
-    # Удаляем временный файл с графиком
+    plt.savefig('cluster_plot.png', bbox_inches='tight')
+    plt.close('all')  # Закрывает все открытые графики
     if os.path.exists(image_path):
         os.remove(image_path)
+    # Создаем или открываем файл Excel для сохранения
+    excel_file = os.path.join(output_folder, 'Кластеризация (этап 2).xlsx')
 
-    print(f'График и данные кластеров успешно добавлены в файл {excel_file}.')
+    # Используем ExcelWriter для работы с xlsxwriter
+    with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+        # Записываем данные по количеству объектов в каждом классе в Excel
+        class_counts.to_excel(writer, sheet_name='KMeans Clustering', startrow=0,
+                              index=False)  # index=False убирает индекс
+
+        # Доступ к объекту workbook и worksheet для вставки графика
+        workbook = writer.book
+        worksheet = writer.sheets['KMeans Clustering']
+
+        # Вставляем график ниже данных
+        worksheet.insert_image('A10', 'cluster_plot.png', {'x_scale': 0.7, 'y_scale': 0.7})
+
+    print(f'Файл {excel_file} успешно создан с графиком и данными кластеров.')
+    # Удаляем временные файлы изображений, если они существуют
+    if os.path.exists(image_path):
+        os.remove(image_path)
 
     # Анализ выбросов
     update_log("Поиск аномального класса по Isolation Forest...")
@@ -1837,68 +1551,44 @@ def analyze_data():
         pd.MultiIndex.from_product([[-1, 1], class_order], names=["ElLabels", "Class"]), fill_value=0
     )
 
-    # Название нового листа
-    sheet_name = 'Аномальный класс (этап 2)'
+    # Создаем новый Excel-файл
+    excel_file = os.path.join(output_folder, 'Аномальный класс (этап 2).xlsx')
+    with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+        # Записываем результаты для Isolation Forest
+        worksheet_iso = writer.book.add_worksheet('Isolation Forest')
+        worksheet_iso.write(0, 0, 'IsoLabels')
+        worksheet_iso.write(0, 1, 'Класс')
+        worksheet_iso.write(0, 2, 'Число объектов')
 
-    # Открываем существующий Excel файл
-    workbook = load_workbook(excel_file)
+        for row_num, (index, row) in enumerate(grouped_iso.iterrows(), start=1):
+            worksheet_iso.write(row_num, 0, index[0])  # IsoLabels
+            worksheet_iso.write(row_num, 1, index[1])  # Class
+            worksheet_iso.write(row_num, 2, row['Сторно'])  # Count
 
-    # Проверяем, существует ли уже лист с названием "Аномальный класс (этап 2)"
-    if sheet_name not in workbook.sheetnames:
-        worksheet_iso = workbook.create_sheet(sheet_name)
-    else:
-        worksheet_iso = workbook[sheet_name]
+        # Добавляем информацию об аномальном классе по Isolation Forest
+        worksheet_iso.write(len(grouped_iso) + 2, 0, 'Аномальный класс по Isolation Forest:')
+        worksheet_iso.write(len(grouped_iso) + 2, 1, anomaly_class_iso)
 
-    # Записываем заголовки для Isolation Forest
-    worksheet_iso.cell(row=1, column=1, value='IsoLabels')
-    worksheet_iso.cell(row=1, column=2, value='Класс')
-    worksheet_iso.cell(row=1, column=3, value='Число объектов')
+        # Добавляем разделитель между результатами
+        worksheet_iso.write(len(grouped_iso) + 4, 0, '-----')  # Разделитель
+        worksheet_iso.write(len(grouped_iso) + 5, 0, 'Elliptic Envelope')  # Заголовок для Elliptic Envelope
 
-    # Записываем данные для IsoLabels
-    for row_num, (index, row) in enumerate(grouped_iso.iterrows(), start=2):
-        worksheet_iso.cell(row=row_num, column=1, value=index[0])  # IsoLabels
-        worksheet_iso.cell(row=row_num, column=2, value=index[1])  # Class
-        worksheet_iso.cell(row=row_num, column=3, value=row['Сторно'])  # Count
+        # Записываем результаты для Elliptic Envelope
+        worksheet_iso.write(len(grouped_iso) + 6, 0, 'ElLabels')
+        worksheet_iso.write(len(grouped_iso) + 6, 1, 'Класс')
+        worksheet_iso.write(len(grouped_iso) + 6, 2, 'Число объектов')
 
-    # Добавляем информацию об аномальном классе по Isolation Forest
-    anomaly_row = len(grouped_iso) + 3
-    worksheet_iso.cell(row=anomaly_row, column=1, value='Аномальный класс по Isolation Forest:')
-    worksheet_iso.cell(row=anomaly_row, column=2, value=anomaly_class_iso)
+        for row_num, (index, row) in enumerate(grouped_el.iterrows(), start=len(grouped_iso) + 7):
+            worksheet_iso.write(row_num, 0, index[0])  # ElLabels
+            worksheet_iso.write(row_num, 1, index[1])  # Class
+            worksheet_iso.write(row_num, 2, row['Сторно'])  # Count
 
-    # Добавляем разделитель между результатами
-    divider_row = anomaly_row + 2
-    worksheet_iso.cell(row=divider_row, column=1, value='-----')  # Разделитель
-    worksheet_iso.cell(row=divider_row + 1, column=1, value='Elliptic Envelope')  # Заголовок для Elliptic Envelope
+        # Добавляем информацию об аномальном классе по Elliptic Envelope
+        worksheet_iso.write(len(grouped_iso) + len(grouped_el) + 7, 0, 'Аномальный класс по Elliptic Envelope:')
+        worksheet_iso.write(len(grouped_iso) + len(grouped_el) + 7, 1, anomaly_class_el)
 
-    # Записываем заголовки для Elliptic Envelope
-    elliptic_row_start = divider_row + 2
-    worksheet_iso.cell(row=elliptic_row_start, column=1, value='ElLabels')
-    worksheet_iso.cell(row=elliptic_row_start, column=2, value='Класс')
-    worksheet_iso.cell(row=elliptic_row_start, column=3, value='Число объектов')
-
-    # Записываем данные для ElLabels
-    for row_num, (index, row) in enumerate(grouped_el.iterrows(), start=elliptic_row_start + 1):
-        worksheet_iso.cell(row=row_num, column=1, value=index[0])  # ElLabels
-        worksheet_iso.cell(row=row_num, column=2, value=index[1])  # Class
-        worksheet_iso.cell(row=row_num, column=3, value=row['Сторно'])  # Count
-
-    # Добавляем информацию об аномальном классе по Elliptic Envelope
-    worksheet_iso.cell(row=row_num + 1, column=1, value='Аномальный класс по Elliptic Envelope:')
-    worksheet_iso.cell(row=row_num + 1, column=2, value=anomaly_class_el)
-
-    # Автовыравнивание ширины столбцов
-    from openpyxl.utils import get_column_letter
-
-    for col in range(1, 4):
-        column_letter = get_column_letter(col)
-        worksheet_iso.column_dimensions[column_letter].width = 20
-
-    # Сохраняем изменения в файл Excel
-    workbook.save(excel_file)
-
-    print(f"Лист 'Аномальный класс (этап 2)' добавлен к файлу '{excel_file}'.")
-
-    # Вывод подозрительных операций в новый лист Excel
+    print(f'Файл {excel_file} создан с аномальными классами для обоих методов.')
+    plt.close('all')
     update_log("Вывод подозрительных операций...")
     # Получаем индексы аномальных объектов из scaled_class_1
     anomaly_indices_el = scaled_class_1[scaled_class_1["Class"] == anomaly_class_el].index
@@ -1906,13 +1596,9 @@ def analyze_data():
     # Фильтрация исходного DataFrame df по этим индексам
     anomaly_original_rows = df.loc[anomaly_indices_el]
 
-    # Сохраняем аномальные строки в существующий файл на новый лист
-    sheet_name = 'Подозрительные операции (итог)'
-    with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-        # Записываем данные на новый лист
-        anomaly_original_rows.to_excel(writer, sheet_name=sheet_name, index=False)
+    # вывод всех аномальных строк изначального документа
+    anomaly_original_rows.to_excel(os.path.join(output_folder, 'Подозрительные операции (этап 2).xlsx'), index=False)
 
-    # Сообщение о завершении работы
     messagebox.showinfo("Результат", f"Тест завершен. Проверьте вывод в папку {output_folder} для деталей.")
 
     # После завершения анализа скрываем все кнопки, кроме "Выход" и "Провести новый анализ"
@@ -1925,11 +1611,9 @@ def analyze_data():
     # Показать кнопку "Провести новый анализ"
     restart_button.pack(side=tk.LEFT, padx=10, pady=10)
 
-
 # Функция для выхода из программы
 def exit_program():
     window.quit()
-
 
 # Функция для перезапуска окна приложения
 def restart_program():
@@ -1937,47 +1621,92 @@ def restart_program():
     create_main_window()
 
 
+import os
+import tkinter as tk
+from tkinter import font as tkfont
+
 def create_main_window():
-    global window, log_label, load_osv_button, start_analysis_button, start_button, restart_button, loading_label
-    button_font = ('Helvetica', 12, "bold")
+    global window, log_label, load_osv_button, start_analysis_button, start_button, restart_button, risk_entry, company_entry
     # Создаем основное окно
     window = tk.Tk()
-    window.title("Анализ данных")
-    window.geometry("400x300")
-    window.configure(bg="#f0f0f0")  # Изменяем цвет фона окна
+    window.title("FraudFounder")
+    window.geometry("500x400")
+    window.configure(bg="#f0f4fc")  # Светло-голубой фон
+
+    # Получаем путь к текущей директории
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Путь к файлу иконки
+    icon_path = os.path.join(base_dir, 'resources', 'fraud.ico')
+
+    # Устанавливаем иконку
+    window.iconbitmap(icon_path)
+
+    # Создаем кастомный шрифт (если шрифт "Jury" установлен)
+    try:
+        custom_font = tkfont.Font(family="Jury", size=12, weight="bold")
+    except:
+        custom_font = tkfont.Font(family="Helvetica", size=12, weight="bold")  # Альтернативный шрифт
+
+    # Функция для валидации числового ввода
+    def validate_numeric_input(value_if_allowed):
+        if value_if_allowed == "" or value_if_allowed.replace('.', '', 1).isdigit():
+            return True
+        else:
+            return False
+
+    # Регистрируем валидацию
+    vcmd = (window.register(validate_numeric_input), '%P')
+
+    # Поле ввода для "Ожидаемый риск мошенничества"
+    risk_label = tk.Label(window, text="Ожидаемый риск мошенничества", anchor="w", bg="#f0f4fc", fg="#276fbf", font=custom_font)
+    risk_label.pack(pady=5, padx=10, fill="x")
+    risk_entry = tk.Entry(window, validate="key", validatecommand=vcmd, font=custom_font, relief="flat", bg="#d4e5fa")
+    risk_entry.insert(0, "0.1")  # Устанавливаем дефолтное значение
+    risk_entry.pack(pady=5, padx=10, fill="x")
+
+    # Поле ввода для "Название компании"
+    company_label = tk.Label(window, text="Название компании", anchor="w", bg="#f0f4fc", fg="#276fbf", font=custom_font)
+    company_label.pack(pady=5, padx=10, fill="x")
+    company_entry = tk.Entry(window, font=custom_font, relief="flat", bg="#d4e5fa")
+    company_entry.pack(pady=5, padx=10, fill="x")
+
+    # Стили кнопок
+    button_style = {
+        "bg": "#509ee3",
+        "fg": "white",
+        "font": custom_font,
+        "activebackground": "#276fbf",
+        "relief": "flat",  # Убираем объем с кнопок
+        "bd": 0  # Убираем границы
+    }
 
     # Кнопка для загрузки первого файла
-    start_button = tk.Button(window, text="Загрузить первый файл (ЖО)", command=load_first_file, bg="#FFFFFF",
-                             fg="blue", font=button_font)
-    start_button.pack(pady=10, padx=10, fill='x')  # Увеличиваем отступы и заполняем по горизонтали
+    start_button = tk.Button(window, text="Загрузить первый файл (ЖО)", command=load_first_file, **button_style)
+    start_button.pack(pady=10, padx=10, fill='x')
 
     # Кнопка для загрузки второго файла
-    load_osv_button = tk.Button(window, text="Загрузить второй файл (ОСВ)", command=load_second_file, bg="#FFFFFF",
-                                fg="blue", font=button_font)
+    load_osv_button = tk.Button(window, text="Загрузить второй файл (ОСВ)", command=load_second_file, **button_style)
     load_osv_button.pack(pady=10, padx=10, fill='x')
     load_osv_button.config(state=tk.DISABLED)
 
     # Кнопка для начала анализа
-    start_analysis_button = tk.Button(window, text="Начать анализ", command=start_analysis, bg="#FFFFFF", fg="blue",
-                                      font=button_font)
+    start_analysis_button = tk.Button(window, text="Начать анализ", command=start_analysis, **button_style)
     start_analysis_button.pack(pady=10, padx=10, fill='x')
     start_analysis_button.pack_forget()
 
     # Лог для отображения текущих действий
-    log_label = tk.Label(window, text="Лог действий будет здесь", anchor="w", bg="#f0f0f0", font=button_font)
+    log_label = tk.Label(window, text="Лог действий будет здесь", anchor="w", bg="#f0f4fc", fg="#276fbf", font=custom_font)
     log_label.pack(side="bottom", fill="x", padx=10, pady=10)
 
     # Кнопка для проведения нового анализа (изначально скрыта)
-    restart_button = tk.Button(window, text="Провести новый анализ", command=restart_program, bg="#FFFFFF", fg="blue",
-                               font=button_font)
-    restart_button.pack_forget()  # Изначально скрыта
+    restart_button = tk.Button(window, text="Провести новый анализ", command=restart_program, **button_style)
+    restart_button.pack_forget()
 
-    # Кнопка выхода
-    exit_button = tk.Button(window, text="Выход", command=exit_program, bg="#f44336", fg="white", font=button_font)
+    # Кнопка выхода (с красным цветом для выхода)
+    exit_button = tk.Button(window, text="Выход", command=exit_program, bg="#ff5f56", fg="white", font=custom_font, activebackground="#e63946", relief="flat", bd=0)
     exit_button.pack(side="right", padx=10, pady=10)
 
     window.mainloop()
-
-
 # Запуск приложения
 create_main_window()
